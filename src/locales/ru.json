@@ -1,5 +1,5 @@
 {
-  "updatedAt": "2026-05-21T00:00:00Z",
+  "updatedAt": "2026-08-15T00:00:00Z",
   "messages": {
     "common": {
       "save": "Сохранить",
@@ -43,6 +43,7 @@
       "importParseError": "Неверный формат файла.",
       "importDone": "Данные успешно импортированы.",
       "importFailed": "Не удалось импортировать данные.",
+      "importContextError": "Расширение было обновлено. Пожалуйста, перезагрузите страницу и повторите попытку.",
       "importPasswordPlaceholder": "Введите пароль экспорта",
       "sectionSettings": "Настройки",
       "sectionPrompts": "Пользовательские промпты",
@@ -52,7 +53,9 @@
       "sectionProjects": "Проекты",
       "sectionProjectFiles": "Файлы проектов",
       "sectionChatTags": "Теги чатов",
-      "sectionSavedItems": "Сохранённые элементы"
+      "sectionSavedItems": "Сохранённые элементы",
+      "sectionCssSnippets": "CSS фрагменты",
+      "sectionMcpServers": "MCP серверы"
     },
     "settings": {
       "generalSettings": "Основные настройки",
@@ -120,6 +123,15 @@
       "contextGuardLimitHint": "Размер контекстного окна веб-чата DeepSeek. По умолчанию 128 000 токенов.",
       "contextGuardStopPercent": "Порог остановки (%)",
       "contextGuardStopPercentHint": "Останавливает Deep Research, когда оценка контекста достигает {{threshold}} токенов. Ограничено диапазоном 50-95%.",
+      "searchProviders": "Поисковые системы",
+      "searchProvidersHint": "Выберите и упорядочите поисковые системы для автоматического веб-поиска. Используется первая система, вернувшая достаточно релевантные результаты.",
+      "providerMoveUp": "Переместить выше",
+      "providerMoveDown": "Переместить ниже",
+      "searchProvider": {
+        "ddgLite": "DuckDuckGo (Lite)",
+        "ddgHtml": "DuckDuckGo (HTML)",
+        "bing": "Bing"
+      },
       "enabled": "Включено",
       "githubTokenHelp": "Создайте классический токен с областью repo в GitHub Settings -> Tokens.",
       "githubTokenShow": "Показать",
@@ -182,7 +194,9 @@
       "exitEditMode": "Выйти из режима редактирования",
       "noSnippets": "CSS-сниппетов пока нет.",
       "advancedSearchPlaceholder": "Поиск настроек...",
-      "advancedNoResults": "Совпадений не найдено."
+      "advancedNoResults": "Совпадений не найдено.",
+      "disableTipBox": "Отключить окно подсказок",
+      "disableTipBoxHint": "Показывает случайную подсказку при каждом открытии панели."
     },
     "skillList": {
       "title": "Набор навыков",
@@ -351,6 +365,7 @@
       "folderNoTextFiles": "В выбранной папке не найдено поддерживаемых текстовых файлов.",
       "pickTimeout": "Средство выбора файлов не вернуло результат. Попробуйте еще раз.",
       "imagesRequireVision": "Изображения можно прикреплять только в режиме Vision.",
+      "expertModeWarning": "Из-за ограничений платформы DeepSeek эти инструменты могут работать некорректно в режиме Expert.",
       "buttonTitle": "Расширенная загрузка",
       "attachProject": "Прикрепить проект",
       "voicePrompt": "Голосовой ввод",
@@ -430,9 +445,33 @@
       "showOutput": "Показать вывод ▾"
     },
     "searchResult": {
-      "searching": "Поиск DuckDuckGo...",
       "resultsFor": "Результаты поиска: {{query}}",
-      "resultCount": "Найдено {{count}} результатов"
+      "resultCount": "Найдено {{count}} результатов",
+      "via": "через {{provider}}",
+      "lowConfidence": "Менее надёжные результаты — проверьте перед цитированием"
+    },
+    "fileReadResult": {
+      "success": "Файл успешно прочитан",
+      "error": "Ошибка чтения файла",
+      "linesRead": "Прочитано строк: {{count}}",
+      "showContent": "Показать содержимое",
+      "hideContent": "Скрыть содержимое",
+      "copyCode": "Копировать",
+      "copied": "Скопировано!"
+    },
+    "directorySearchResult": {
+      "resultsFor": "Поиск по коду: \"{{query}}\"",
+      "matchCount": "Найдено совпадений: {{count}}",
+      "noMatches": "Совпадений в коде не найдено.",
+      "copySnippet": "Копировать",
+      "copied": "Скопировано!"
+    },
+    "directoryListResult": {
+      "title": "Каталог: {{path}}",
+      "entryCount": "Элементов: {{count}}",
+      "folder": "Папка",
+      "file": "Файл",
+      "empty": "Каталог пуст."
     },
     "autoCodeRunner": {
       "aiWantsToRun": "ИИ хочет выполнить код {{lang}}",
@@ -464,8 +503,116 @@
       "copied": "Скопировано!",
       "download": "Скачать"
     },
+    "harnessTaskCard": {
+      "title": "Задача DeepSeek Harness",
+      "pluginTag": "Bridge Plugin v{{version}} (Auto SSE)",
+      "statusReady": "Готово",
+      "statusConnecting": "Подключение...",
+      "statusRunning": "Выполняется...",
+      "statusFinishing": "Компиляция...",
+      "statusCompleted": "Завершено",
+      "statusFallback": "Ручной режим",
+      "statusCancelled": "Отменено",
+      "statusError": "Ошибка",
+      "cwdLabel": "Абсолютный путь к кодовой базе (CWD):",
+      "cwdPlaceholder": "напр. A:/Users/Edige/GitHub/asistan",
+      "taskLabel": "Описание и план задачи:",
+      "taskDefault": "Выполнить задачу",
+      "fallbackTitle": "Ручное выполнение Harness (Bridge Plugin не установлен)",
+      "fallbackDesc": "Текст задачи скопирован в буфер обмена! Вставьте его в Harness и нажмите Enter.",
+      "copyPrompt": "Скопировать снова",
+      "openHarness": "Открыть Harness",
+      "fallbackHint": "Для полного автоматического режима установите Bridge Plugin в терминале:",
+      "pluginRepoButton": "Репозиторий Bridge Plugin (GitHub)",
+      "liveHeader": "Поток выполнения ({{count}} событий)",
+      "liveAssistantLabel": "Вывод ассистента:",
+      "logSessionCreated": "Сессия {{sid}} создана в Harness.",
+      "logToolCall": "[{{time}}] Запуск инструмента: {{tool}}",
+      "logToolResult": "[{{time}}] Инструмент завершён: {{tool}}",
+      "logCompiling": "[{{time}}] Компиляция результатов...",
+      "logComplete": "[{{time}}] Ход завершён. Отчёт добавлен к следующему сообщению.",
+      "logCancelled": "Задача отменена пользователем.",
+      "reportTitle": "Итоговый отчёт",
+      "reportCopy": "Копировать",
+      "reportInsert": "Вставить в чат",
+      "autoInjectNotice": "Этот итоговый отчёт будет автоматически добавлен в ваше следующее сообщение внутри блока <code>&lt;BetterDeepSeek&gt;</code>.",
+      "copyFeedback": "Отчёт скопирован в буфер обмена!",
+      "copyPromptFeedback": "Текст задачи скопирован в буфер обмена!",
+      "copyFailed": "Не удалось скопировать.",
+      "insertFeedback": "Вставлено в чат!",
+      "insertFallback": "Скопировано в буфер обмена (поле чата не найдено)",
+      "debugToggleShow": "Показать подробный лог ошибки",
+      "debugToggleHide": "Скрыть подробный лог ошибки",
+      "debugUrl": "URL:",
+      "debugError": "Ошибка:",
+      "cancelBtn": "Остановить / Отменить",
+      "runExecuting": "Выполняется в Harness...",
+      "runAgain": "Перезапустить",
+      "runFallback": "Выполнить снова",
+      "runDefault": "Запустить в DeepSeek Harness",
+      "executeFailed": "Не удалось выполнить сессию в Harness."
+    },
+    "deepCodeModal": {
+      "title": "DeepCode & Harness",
+      "subtitle": "Подключите локальную кодовую базу, чтобы дать DeepSeek возможность проверки файлов, поиска по коду и автоматического выполнения задач Harness.",
+      "activeCodebase": "Активная кодовая база",
+      "filesIndexed": "{{count}} файлов проиндексировано",
+      "linkFolder": "Подключить локальную папку...",
+      "addNewDirectory": "Добавить новую папку",
+      "pickFolder": "Выбрать папку",
+      "indexing": "Индексация файлов...",
+      "manualPathLabel": "Абсолютный системный путь (CWD для Harness):",
+      "manualPathPlaceholder": "напр. A:/Users/Edige/GitHub/asistan",
+      "manualPathHint": "Из-за правил безопасности веб-браузеров путь нужно ввести ещё раз.",
+      "savePath": "Сохранить путь",
+      "pathSaved": "Абсолютный путь сохранён. Он будет использоваться как CWD для Harness.",
+      "pathMismatch": "Введённый путь не совпадает с выбранной папкой \"{{name}}\". Проверьте имя последней папки.",
+      "recentTitle": "Недавние кодовые базы",
+      "emptyRecent": "Нет недавних папок. Нажмите кнопку выше, чтобы подключить локальную папку.",
+      "removeHistory": "Удалить из истории",
+      "done": "Готово",
+      "closeAria": "Закрыть",
+      "linkedFeedback": "Подключено: \"{{name}}\" ({{count}} файлов проиндексировано)",
+      "selectFailed": "Не удалось выбрать каталог.",
+      "fsApiUnsupported": "API File System Access не поддерживается в этом контексте браузера.",
+      "switchedFeedback": "Переключено на \"{{name}}\"",
+      "recentNeedsPicker": "Для \"{{name}}\" нет связанного доступа к файлам. Выберите его с помощью средства выбора папок, чтобы включить чтение файлов.",
+      "cancel": "Отмена"
+    },
+    "deepCodeOnboarding": {
+      "title": "Добро пожаловать в DeepCode",
+      "harnessIntro": "DeepCode работает в связке с официальным <strong>DeepSeek Harness</strong>. Для работы этой функции на вашем устройстве должен быть установлен <strong>DeepSeek Harness</strong>.",
+      "harnessLink": "Скачать DeepSeek Harness на GitHub",
+      "pluginLink": "Получить Bridge Plugin Better DeepSeek (GitHub)",
+      "pluginInfo": "Для подключения Better DeepSeek к DeepSeek Harness требуется <strong>плагин</strong>. Если плагин установлен, всё происходит полностью автоматически. Если он не установлен, потребуются ручные действия.",
+      "gotIt": "Понятно",
+      "closeAria": "Закрыть"
+    },
+    "deepCodeToggle": {
+      "label": "DeepCode",
+      "labelActive": "DeepCode: Активен",
+      "labelWithDir": "DeepCode: {{dir}}",
+      "ariaLabel": "DeepCode: локальная кодовая база и Harness",
+      "titleActive": "DeepCode активен: {{path}}",
+      "titleDefault": "DeepCode: локальная кодовая база и рабочая область Harness",
+      "panelTitle": "DeepCode",
+      "closeAria": "Закрыть",
+      "integrationTitle": "Интеграция кодовой базы и Harness",
+      "integrationDesc": "Внедряйте контекст кодовой базы и включайте локальные задачи DeepSeek Harness.",
+      "enableToggle": "Включить DeepCode",
+      "disableToggle": "Отключить DeepCode",
+      "recentTitle": "Недавние кодовые базы",
+      "removeHistory": "Удалить из истории",
+      "emptyRecents": "Недавних кодовых баз пока нет. Подключите локальную папку, чтобы начать.",
+      "statusEnhanced": "Bridge Harness подключён (авто SSE)",
+      "statusFallback": "Резервный режим Harness"
+    },
     "downloadCard": {
-      "download": "Скачать"
+      "download": "Скачать",
+      "viewFiles": "Показать файлы",
+      "hideFiles": "Скрыть файлы",
+      "showCode": "Показать код",
+      "hideCode": "Скрыть код"
     },
     "pptxCard": {
       "title": "Презентация PowerPoint",
@@ -532,6 +679,20 @@
       "sendFailed": "Ошибка отправки. Попробуйте снова.",
       "cancel": "Отмена"
     },
+    "chartCard": {
+      "defaultTitle": "Интерактивный график",
+      "defaultSubtitle": "Визуализация Vega-Lite",
+      "downloadPng": "Скачать как PNG",
+      "downloadSvg": "Скачать как SVG",
+      "downloadJson": "Скачать схему (JSON)",
+      "viewCode": "Показать код",
+      "hideCode": "Скрыть код",
+      "copySpec": "Копировать код",
+      "copied": "Скопировано!",
+      "renderError": "Не удалось отобразить график",
+      "expand": "Развернуть график",
+      "collapse": "Свернуть график"
+    },
     "previewPanel": {
       "close": "Закрыть",
       "download": "Скачать .html"
@@ -562,7 +723,31 @@
     },
     "mcp": {
       "detailShow": "▸ Показать детали",
-      "detailHide": "▾ Скрыть детали"
+      "detailHide": "▾ Скрыть детали",
+      "inlineMaxChars": "Макс. символов в строке",
+      "inlineMaxCharsHint": "Макс. символов для списка инструментов MCP и результатов. Если список превышает лимит, лишние инструменты опускаются с предупреждением. При отклонении результата используются сокращённые варианты.",
+      "transportNote": "Примечание: Поддерживается только HTTP/Streamable HTTP транспорт.",
+      "connected": "Подключено: {{count}} инструментов найдено",
+      "sectionTitle": "MCP Серверы",
+      "description": "Добавляйте удалённые MCP (Model Context Protocol) серверы. ИИ сможет находить и вызывать инструменты с этих серверов.",
+      "test": "Тест",
+      "testLoading": "Тестирование...",
+      "edit": "Редактировать",
+      "addServer": "Добавить MCP сервер",
+      "addModalTitle": "Добавить MCP сервер",
+      "editModalTitle": "Редактировать MCP сервер",
+      "nameLabel": "Название",
+      "namePlaceholder": "Мой MCP сервер",
+      "serverUrlLabel": "URL сервера",
+      "serverUrlPlaceholder": "https://example.com/mcp",
+      "apiKeyLabel": "API ключ (необязательно)",
+      "apiKeyPlaceholder": "sk-...",
+      "enabledLabel": "Включён",
+      "cancel": "Отмена",
+      "save": "Сохранить",
+      "deleteConfirm": "Удалить MCP сервер «{{name}}»?",
+      "testFailed": "Ошибка MCP теста: {{message}}",
+      "toolsCount": "{{count}} инструментов"
     },
     "expandToggle": {
       "expand": "Развернуть",
@@ -581,8 +766,12 @@
       "skillActive": "Активный навык: <strong>{{name}}</strong>",
       "webFetchRequested": "Веб-страница загружается",
       "githubFetchRequested": "GitHub репозиторий загружается",
-      "searchRequested": "Поиск DuckDuckGo...",
-      "memoryStored": "Память сохранена ({{count}})."
+      "searchRequested": "Идёт поиск через {{provider}}...",
+      "fileReadRequested": "Чтение файла кодовой базы...",
+      "directorySearchRequested": "Поиск по кодовой базе...",
+      "directoryListRequested": "Список каталога...",
+      "memoryStored": "Память сохранена ({{count}}).",
+      "downloadMd": "Скачать как .md"
     },
     "savedItems": {
       "title": "Сохранённое",
@@ -767,6 +956,53 @@
       "seeAllChanges": "Посмотреть все изменения в v{{version}} на GitHub",
       "seeDetailed": "Посмотреть подробные примечания к выпуску на GitHub",
       "features": {
+        "v0_1_13": {
+          "title": "Срочный хотфикс 1",
+          "features": {
+            "feat_0": {
+              "title": "Исправление сбоя",
+              "description": "Недавнее обновление DeepSeek нарушило работу расширения. Мы оперативно подготовили исправление для восстановления основных функций. Мы внимательно следим за ситуацией и при необходимости выпустим дополнительные хотфиксы."
+            },
+            "feat_1": {
+              "title": "Список поисковых систем",
+              "description": "Теперь вы можете настраивать, упорядочивать и выбирать приоритет поисковых систем (Bing и DuckDuckGo) в настройках."
+            }
+          }
+        },
+        "v0_1_12": {
+          "title": "DeepCode, очередь сообщений и стабильность",
+          "features": {
+            "feat_0": {
+              "title": "DeepCode (Экспериментально)",
+              "description": "Режим совместной разработки с DeepSeek Harness. Планируйте задачи и отправляйте их напрямую в Harness с помощью плагина <a href='https://github.com/EdgeTypE/dsh-better-deepseek' target='_blank' style='color: #4d6bfe; text-decoration: underline;'>dsh-better-deepseek</a>."
+            },
+            "feat_1": {
+              "title": "Очередь сообщений (Queued Prompts)",
+              "description": "Отправляйте сообщения во время генерации ответа; BDS поставит их в очередь и отправит автоматически по завершении."
+            },
+            "feat_2": {
+              "title": "Улучшения стабильности и интерфейса",
+              "description": "Исправления парсера для обновленного интерфейса DeepSeek, экспорт навыков/персон и исправление ошибок."
+            }
+          }
+        },
+        "v0_1_11": {
+          "title": "MCP Серверы, динамические таблицы и стабильность",
+          "features": {
+            "feat_0": {
+              "title": "Поддержка MCP серверов",
+              "description": "Подключайте удалённые MCP серверы к DeepSeek для доступа к внешним инструментам. Настройте серверы в Настройки → Расширенные настройки → MCP Серверы."
+            },
+            "feat_1": {
+              "title": "Динамические таблицы",
+              "description": "Сортируйте данные и изменяйте порядок столбцов прямо в таблицах, сгенерированных DeepSeek."
+            },
+            "feat_2": {
+              "title": "Улучшения стабильности и UX",
+              "description": "Десятки исправлений ошибок и улучшений UI/UX по всему расширению."
+            }
+          }
+        },
         "v0_1_10": {
           "title": "Стабильность и улучшения",
           "features": {
@@ -999,7 +1235,8 @@
       "en": "English",
       "tr": "Türkçe",
       "ru": "Русский",
-      "zh-cn": "简体中文"
+      "zh-cn": "简体中文",
+      "fa": "فارسی"
     },
     "apiPlayground": {
       "title": "API Playground",
@@ -1099,6 +1336,60 @@
       "enterJsonSchema": "Введите JSON схему...",
       "useActiveKey": "Используется ключ: {{name}}",
       "noActiveKey": "Нет активного API ключа"
+    },
+    "queue": {
+      "title": "Сообщения в очереди",
+      "waitingForAI": "Ожидание ИИ...",
+      "sendingNext": "Отправка следующего...",
+      "clearAll": "Очистить все",
+      "addToQueue": "Добавить в очередь",
+      "enterToQueueTip": "ИИ генерирует ответ. Нажмите Enter, чтобы добавить в очередь.",
+      "moveUp": "Переместить вверх",
+      "moveDown": "Переместить вниз",
+      "itemCount.one": "{{count}} элемент",
+      "itemCount.other": "{{count}} элементов"
+    },
+    "deepResearchRevision": {
+      "title": "Запросить изменения плана",
+      "run": "Запуск: {{id}}",
+      "closeAria": "Закрыть ревизию Deep Research",
+      "placeholder": "Опишите, что должно измениться в исследовательском плане...",
+      "cancel": "Отмена",
+      "submit": "Отправить отзыв",
+      "cancelledToast": "Ревизия Deep Research отменена."
+    },
+    "tableInjector": {
+      "columnOptions": "\u041D\u0430\u0441\u0442\u0440\u043E\u0439\u043A\u0438 \u0441\u0442\u043E\u043B\u0431\u0446\u0430",
+      "hideRow": "\u0421\u043A\u0440\u044B\u0442\u044C \u0441\u0442\u0440\u043E\u043A\u0443",
+      "manageColumnsRows": "\u0423\u043F\u0440\u0430\u0432\u043B\u0435\u043D\u0438\u0435 \u0441\u0442\u043E\u043B\u0431\u0446\u0430\u043C\u0438 \u0438 \u0441\u0442\u0440\u043E\u043A\u0430\u043C\u0438",
+      "sortAsc": "\u25B2 \u0421\u043E\u0440\u0442\u0438\u0440\u043E\u0432\u0430\u0442\u044C \u0410\u2192\u042F",
+      "sortDesc": "\u25BC \u0421\u043E\u0440\u0442\u0438\u0440\u043E\u0432\u0430\u0442\u044C \u042F\u2192\u0410",
+      "hideColumn": "\u0421\u043A\u0440\u044B\u0442\u044C \u0441\u0442\u043E\u043B\u0431\u0435\u0446",
+      "showColumn": "\u041F\u043E\u043A\u0430\u0437\u0430\u0442\u044C \u0441\u0442\u043E\u043B\u0431\u0435\u0446",
+      "columns": "\u0421\u0442\u043E\u043B\u0431\u0446\u044B",
+      "hiddenRows": "\u0421\u043A\u0440\u044B\u0442\u044B\u0435 \u0441\u0442\u0440\u043E\u043A\u0438 ({{count}})",
+      "showAll": "\u041F\u043E\u043A\u0430\u0437\u0430\u0442\u044C \u0432\u0441\u0435 \u0441\u0442\u043E\u043B\u0431\u0446\u044B \u0438 \u0441\u0442\u0440\u043E\u043A\u0438",
+      "columnLabel": "\u0421\u0442\u043E\u043B\u0431\u0435\u0446 {{n}}"
+    },
+    "shareModal": {
+      "searchEngineWarning": "Общие беседы могут быть найдены и проиндексированы поисковыми системами."
+    },
+    "tips": {
+      "title": "\uD83D\uDCA1 \u0421\u043E\u0432\u0435\u0442",
+      "disableInSettings": "\u0412\u044B \u043C\u043E\u0436\u0435\u0442\u0435 \u043E\u0442\u043A\u043B\u044E\u0447\u0438\u0442\u044C \u044D\u0442\u043E \u0432 \u041D\u0430\u0441\u0442\u0440\u043E\u0439\u043A\u0430\u0445.",
+      "0": "\u0427\u0442\u043E\u0431\u044B \u044D\u043A\u0441\u043F\u043E\u0440\u0442\u0438\u0440\u043E\u0432\u0430\u0442\u044C \u0447\u0430\u0442, \u043D\u0430\u0436\u043C\u0438\u0442\u0435 \u043D\u0430 \u043A\u043D\u043E\u043F\u043A\u0443 ... \u0440\u044F\u0434\u043E\u043C \u0441 \u0441\u0435\u0441\u0441\u0438\u0435\u0439 \u0432 \u0438\u0441\u0442\u043E\u0440\u0438\u0438 \u0447\u0430\u0442\u043E\u0432.",
+      "1": "\u0412\u044B \u043C\u043E\u0436\u0435\u0442\u0435 \u043E\u0442\u043A\u043B\u044E\u0447\u0438\u0442\u044C \u044D\u0442\u043E \u043E\u043A\u043D\u043E \u043F\u043E\u0434\u0441\u043A\u0430\u0437\u043E\u043A \u0432 \u041D\u0430\u0441\u0442\u0440\u043E\u0439\u043A\u0430\u0445.",
+      "2": "\u0412\u044B \u043C\u043E\u0436\u0435\u0442\u0435 \u044D\u043A\u0441\u043F\u043E\u0440\u0442\u0438\u0440\u043E\u0432\u0430\u0442\u044C \u0441\u0432\u043E\u0438 \u0442\u0435\u043A\u0443\u0449\u0438\u0435 \u043D\u0430\u0441\u0442\u0440\u043E\u0439\u043A\u0438 \u0438 \u0434\u0430\u043D\u043D\u044B\u0435. \u0412\u043E\u0441\u043F\u043E\u043B\u044C\u0437\u0443\u0439\u0442\u0435\u0441\u044C \u0440\u0430\u0437\u0434\u0435\u043B\u043E\u043C \u0420\u0430\u0441\u0448\u0438\u0440\u0435\u043D\u043D\u044B\u0435 \u043D\u0430\u0441\u0442\u0440\u043E\u0439\u043A\u0438.",
+      "3": "\u0421\u043E\u0445\u0440\u0430\u043D\u044F\u0439\u0442\u0435 \u0447\u0430\u0441\u0442\u043E \u0438\u0441\u043F\u043E\u043B\u044C\u0437\u0443\u0435\u043C\u044B\u0435 \u043F\u0440\u043E\u043C\u043F\u0442\u044B \u043A\u0430\u043A \u0441\u043D\u0438\u043F\u043F\u0435\u0442\u044B \u0438 \u043E\u0442\u043F\u0440\u0430\u0432\u043B\u044F\u0439\u0442\u0435 \u0438\u0445 \u0441\u043D\u043E\u0432\u0430 \u043E\u0434\u043D\u0438\u043C \u043A\u043B\u0438\u043A\u043E\u043C. \u0412\u044B \u0434\u0430\u0436\u0435 \u043C\u043E\u0436\u0435\u0442\u0435 \u043D\u0430\u0437\u043D\u0430\u0447\u0438\u0442\u044C \u0441\u043D\u0438\u043F\u043F\u0435\u0442\u0443 \u043A\u043E\u043C\u0430\u043D\u0434\u0443 \"/\" \u0434\u043B\u044F \u0431\u044B\u0441\u0442\u0440\u043E\u0433\u043E \u0434\u043E\u0441\u0442\u0443\u043F\u0430. \u041F\u043E\u0434\u0440\u043E\u0431\u043D\u0435\u0435 \u0432 \u0440\u0430\u0437\u0434\u0435\u043B\u0435 \u0421\u043D\u0438\u043F\u043F\u0435\u0442\u044B \u0432 \u043F\u0430\u043D\u0435\u043B\u0438 BDS.",
+      "4": "\u0417\u043D\u0430\u0435\u0442\u0435 \u043B\u0438 \u0432\u044B, \u0447\u0442\u043E \u043C\u043E\u0436\u043D\u043E \u0432\u043A\u043B\u044E\u0447\u0438\u0442\u044C \u0440\u0435\u0436\u0438\u043C \u043D\u0435\u0441\u043A\u043E\u043B\u044C\u043A\u0438\u0445 \u0441\u0438\u0441\u0442\u0435\u043C\u043D\u044B\u0445 \u043F\u0440\u043E\u043C\u043F\u0442\u043E\u0432, \u0447\u0442\u043E\u0431\u044B \u0438\u0441\u043F\u043E\u043B\u044C\u0437\u043E\u0432\u0430\u0442\u044C \u043D\u0435\u0441\u043A\u043E\u043B\u044C\u043A\u043E \u0441\u0438\u0441\u0442\u0435\u043C\u043D\u044B\u0445 \u043F\u0440\u043E\u043C\u043F\u0442\u043E\u0432 \u043E\u0434\u043D\u043E\u0432\u0440\u0435\u043C\u0435\u043D\u043D\u043E \u0441 \u0440\u0430\u0437\u043B\u0438\u0447\u043D\u044B\u043C\u0438 \u0440\u0430\u0441\u043F\u0438\u0441\u0430\u043D\u0438\u044F\u043C\u0438 \u0438 \u0443\u0441\u043B\u043E\u0432\u0438\u044F\u043C\u0438 \u0434\u043B\u044F \u0441\u043E\u0437\u0434\u0430\u043D\u0438\u044F \u0441\u043E\u0431\u0441\u0442\u0432\u0435\u043D\u043D\u043E\u0433\u043E \u0440\u0430\u0431\u043E\u0447\u0435\u0433\u043E \u043F\u0440\u043E\u0446\u0435\u0441\u0441\u0430?",
+      "5": "\u0412\u044B \u043C\u043E\u0436\u0435\u0442\u0435 \u0438\u043C\u043F\u043E\u0440\u0442\u0438\u0440\u043E\u0432\u0430\u0442\u044C \u0441\u0432\u043E\u0438 \u0432\u043E\u0441\u043F\u043E\u043C\u0438\u043D\u0430\u043D\u0438\u044F \u0438\u0437 \u0434\u0440\u0443\u0433\u043E\u0433\u043E \u0418\u0418 \u0432 BDS. \u041D\u0430\u0436\u043C\u0438\u0442\u0435 \u00AB\u0418\u043C\u043F\u043E\u0440\u0442\u0438\u0440\u043E\u0432\u0430\u0442\u044C \u0432\u043E\u0441\u043F\u043E\u043C\u0438\u043D\u0430\u043D\u0438\u044F \u0438\u0437 \u0434\u0440\u0443\u0433\u043E\u0433\u043E \u0418\u0418\u00BB \u0432\u043D\u0438\u0437\u0443 \u0440\u0430\u0437\u0434\u0435\u043B\u0430 \u041F\u0430\u043C\u044F\u0442\u044C.",
+      "6": "\u0417\u043D\u0430\u0435\u0442\u0435 \u043B\u0438 \u0432\u044B, \u0447\u0442\u043E \u0443 Better DeepSeek \u0442\u0430\u043A\u0436\u0435 \u0435\u0441\u0442\u044C <a href=\"https://github.com/EdgeTypE/better-deepseek\" target=\"_blank\" rel=\"noopener noreferrer\">Android \u043F\u0440\u0438\u043B\u043E\u0436\u0435\u043D\u0438\u0435</a>?",
+      "7": "\u0415\u0441\u043B\u0438 \u0432\u0430\u043C \u043D\u0440\u0430\u0432\u0438\u0442\u0441\u044F \u0440\u0430\u0441\u0448\u0438\u0440\u0435\u043D\u0438\u0435, \u043F\u043E\u0434\u0435\u043B\u0438\u0442\u0435\u0441\u044C \u0438\u043C \u0441 \u0434\u0440\u0443\u0437\u044C\u044F\u043C\u0438! \u0427\u0442\u043E\u0431\u044B \u043F\u0440\u0435\u0434\u043B\u043E\u0436\u0438\u0442\u044C \u0444\u0443\u043D\u043A\u0446\u0438\u044E, \u0441\u043E\u043E\u0431\u0449\u0438\u0442\u0435 \u043D\u0430\u043C \u043D\u0430 \u043D\u0430\u0448\u0435\u0439 <a href=\"https://github.com/EdgeTypE/better-deepseek\" target=\"_blank\" rel=\"noopener noreferrer\">\u0441\u0442\u0440\u0430\u043D\u0438\u0446\u0435 GitHub</a>.",
+      "8": "\u0417\u043D\u0430\u0435\u0442\u0435 \u043B\u0438 \u0432\u044B, \u0447\u0442\u043E \u043C\u043E\u0436\u043D\u043E \u043F\u043E\u0434\u043A\u043B\u044E\u0447\u0430\u0442\u044C MCP \u0441\u0435\u0440\u0432\u0435\u0440\u044B \u043A Better DeepSeek? \u0417\u0430\u0433\u043B\u044F\u043D\u0438\u0442\u0435 \u0432 \u0420\u0430\u0441\u0448\u0438\u0440\u0435\u043D\u043D\u044B\u0435 \u043D\u0430\u0441\u0442\u0440\u043E\u0439\u043A\u0438.",
+      "9": "\u0412\u044B \u043C\u043E\u0436\u0435\u0442\u0435 \u043D\u0430\u0441\u0442\u0440\u043E\u0438\u0442\u044C \u0438\u043D\u0442\u0435\u0440\u0444\u0435\u0439\u0441 \u043F\u043E \u0441\u0432\u043E\u0435\u043C\u0443 \u0432\u043A\u0443\u0441\u0443 \u0441 \u043F\u043E\u043C\u043E\u0449\u044C\u044E Custom CSS.",
+      "10": "\u041C\u044B \u0445\u043E\u0442\u0438\u043C \u0434\u043E\u0431\u0430\u0432\u0438\u0442\u044C \u0431\u043E\u043B\u044C\u0448\u0435 \u044F\u0437\u044B\u043A\u043E\u0432 \u0432 Better DeepSeek. \u0415\u0441\u043B\u0438 \u0432\u044B \u0445\u043E\u0442\u0438\u0442\u0435 \u0434\u043E\u0431\u0430\u0432\u0438\u0442\u044C \u0441\u0432\u043E\u0439 \u044F\u0437\u044B\u043A, \u043F\u0440\u043E\u0447\u0438\u0442\u0430\u0439\u0442\u0435 <a href=\"https://github.com/EdgeTypE/better-deepseek/blob/main/LOCALIZATION.md\" target=\"_blank\" rel=\"noopener noreferrer\">\u0437\u0434\u0435\u0441\u044C</a>. \u0422\u0430\u043A\u0436\u0435, \u0435\u0441\u043B\u0438 \u0432\u044B \u0437\u0430\u043C\u0435\u0442\u0438\u043B\u0438 \u043E\u0448\u0438\u0431\u043A\u0438 \u043F\u0435\u0440\u0435\u0432\u043E\u0434\u0430, \u0432\u044B \u043C\u043E\u0436\u0435\u0442\u0435 \u0438\u0445 \u0438\u0441\u043F\u0440\u0430\u0432\u0438\u0442\u044C.",
+"11": "Вы можете назначать теги любой сессии чата, нажав на кнопку ... в истории сессий. Затем используйте эти теги для быстрого поиска или фильтрации разговоров.",
+      "12": "Вы можете создавать новые навыки или персонажей, просто попросив DeepSeek. Просто скажите, что вам нужно."
     }
   }
 }

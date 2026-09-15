@@ -8,6 +8,7 @@ import { findLatestAssistantMessageNode, collectMessageNodes, scheduleScan } fro
 import { finalizeLongWork } from "./files/long-work.js";
 import { getActiveProject, getActiveFiles, getFilesForProject } from "./project-manager.js";
 import { getDirectoryFiles } from "../lib/local-directory-source.js";
+import { getDeepCodeFiles, buildDeepCodeFileTree } from "./deep-code.js";
 import { discoverTags } from "./tags/tag-manager.js";
 import { recordOutgoingContext, recordServerUsage } from "./context-budget.js";
 import { retainOnlyHistorySession } from "./load-all-history.js";
@@ -42,6 +43,21 @@ export function setupBridgeEvents() {
     pushConfigToPage();
   };
   window.addEventListener(BRIDGE_EVENTS.requestConfig, handlers[BRIDGE_EVENTS.requestConfig]);
+
+  handlers["bds:deep-code-toggle-state"] = () => {
+    pushConfigToPage();
+  };
+  window.addEventListener("bds:deep-code-toggle-state", handlers["bds:deep-code-toggle-state"]);
+
+  handlers["bds:request-config-push"] = () => {
+    pushConfigToPage();
+  };
+  window.addEventListener("bds:request-config-push", handlers["bds:request-config-push"]);
+
+  handlers["bds:clear-harness-report"] = () => {
+    state.deepCode.pendingReport = null;
+  };
+  window.addEventListener("bds:clear-harness-report", handlers["bds:clear-harness-report"]);
 
   handlers[BRIDGE_EVENTS.networkState] = (event) => {
     let detail = event && event.detail ? event.detail : {};
@@ -327,6 +343,18 @@ export async function pushConfigToPage() {
         enabled: Boolean(state.deepResearch.enabled && state.deepResearch.pendingRun),
         runId: state.deepResearch.pendingRun?.id || "",
       },
+      deepCode: {
+        enabled: Boolean(state.deepCode.enabled),
+        activeDirectory: state.deepCode.activeDirectory || "",
+        manualPath: state.deepCode.manualPath || "",
+        pendingReport: state.deepCode.pendingReport || null,
+        fileTree: buildDeepCodeFileTree(
+          state.deepCode.paths && state.deepCode.paths.length
+            ? state.deepCode.paths
+            : getDeepCodeFiles(),
+          { rootName: state.deepCode.activeDirectory || "" },
+        ),
+      },
       activeProject: activeProject
         ? {
           name: activeProject.name,
@@ -334,6 +362,8 @@ export async function pushConfigToPage() {
           files: allFiles.map((f) => ({ name: f.name, content: f.content })),
         }
         : null,
+      mcpInlineMaxChars: Number(state.settings.mcpInlineMaxChars) || 8000,
+      modelInputLimits: state.remoteConfig?.modelInputLimits || {},
     };
 
     window.dispatchEvent(

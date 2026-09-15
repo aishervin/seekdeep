@@ -1,5 +1,5 @@
 {
-  "updatedAt": "2026-06-30T00:00:00Z",
+  "updatedAt": "2026-08-15T00:00:00Z",
   "messages": {
     "common": {
       "save": "保存",
@@ -43,6 +43,7 @@
       "importParseError": "文件格式无效，无法解析。",
       "importDone": "数据导入成功。",
       "importFailed": "数据导入失败，请检查文件。",
+      "importContextError": "插件已更新，请刷新页面后重试。",
       "importPasswordPlaceholder": "请输入导出时设置的密码",
       "sectionSettings": "设置",
       "sectionPrompts": "自定义系统提示词",
@@ -52,7 +53,9 @@
       "sectionProjects": "项目",
       "sectionProjectFiles": "项目文件",
       "sectionChatTags": "聊天标签",
-      "sectionSavedItems": "已保存项目"
+      "sectionSavedItems": "已保存项目",
+      "sectionCssSnippets": "CSS 片段",
+      "sectionMcpServers": "MCP 服务器"
     },
     "settings": {
       "generalSettings": "常规设置",
@@ -126,6 +129,15 @@
       "contextGuardLimitHint": "DeepSeek 网页版会话的上下文窗口大小，默认为 128,000 tokens。",
       "contextGuardStopPercent": "停止阈值（%）",
       "contextGuardStopPercentHint": "当预估上下文用量达到 {{threshold}} tokens 时停止深度研究。取值范围为 50%–95%。",
+      "searchProviders": "搜索引擎",
+      "searchProvidersHint": "选择并排列自动网页搜索使用的引擎。返回高质量结果的引擎将被优先采用。",
+      "providerMoveUp": "上移搜索引擎",
+      "providerMoveDown": "下移搜索引擎",
+      "searchProvider": {
+        "ddgLite": "DuckDuckGo (Lite)",
+        "ddgHtml": "DuckDuckGo (HTML)",
+        "bing": "Bing"
+      },
       "collapseLongUserMessages": "折叠过长的用户消息",
       "collapseLongUserMessagesHint": "自动折叠过长的用户消息，点击“查看更多”展开。",
       "loadAllHistoryOnSession": "打开会话时加载全部历史记录",
@@ -181,7 +193,9 @@
       "exitEditMode": "退出编辑模式",
       "noSnippets": "暂无 CSS 片段。",
       "advancedSearchPlaceholder": "搜索设置…",
-      "advancedNoResults": "未找到匹配的设置。"
+      "advancedNoResults": "未找到匹配的设置。",
+      "disableTipBox": "禁用提示框",
+      "disableTipBoxHint": "每次打开抽屉时显示随机提示。"
     },
     "skillList": {
       "title": "技能集",
@@ -350,6 +364,7 @@
       "folderNoTextFiles": "所选文件夹中未找到受支持的文本文件。",
       "pickTimeout": "文件选择器未返回结果。请重试。",
       "imagesRequireVision": "图片只能在 Vision 模式下附加。",
+      "expertModeWarning": "由于 DeepSeek 平台限制，这些工具在 Expert 模式下可能无法正常工作。",
       "buttonTitle": "高级上传",
       "attachProject": "关联项目",
       "voicePrompt": "语音输入",
@@ -429,9 +444,33 @@
       "showOutput": "显示输出 ▾"
     },
     "searchResult": {
-      "searching": "正在 DuckDuckGo 中搜索…",
       "resultsFor": "关于“{{query}}”的搜索结果",
-      "resultCount": "共找到 {{count}} 条结果"
+      "resultCount": "共找到 {{count}} 条结果",
+      "via": "来源：{{provider}}",
+      "lowConfidence": "低可信度结果——引用前请核实"
+    },
+    "fileReadResult": {
+      "success": "文件读取成功",
+      "error": "文件读取失败",
+      "linesRead": "已读取 {{count}} 行",
+      "showContent": "显示文件内容",
+      "hideContent": "隐藏文件内容",
+      "copyCode": "复制",
+      "copied": "已复制!"
+    },
+    "directorySearchResult": {
+      "resultsFor": "代码库搜索: \"{{query}}\"",
+      "matchCount": "找到 {{count}} 个匹配项",
+      "noMatches": "未找到匹配的代码。",
+      "copySnippet": "复制",
+      "copied": "已复制!"
+    },
+    "directoryListResult": {
+      "title": "目录: {{path}}",
+      "entryCount": "{{count}} 项",
+      "folder": "文件夹",
+      "file": "文件",
+      "empty": "此目录为空。"
     },
     "autoCodeRunner": {
       "aiWantsToRun": "AI 想要运行 {{lang}} 代码",
@@ -463,8 +502,116 @@
       "copied": "已复制！",
       "download": "下载"
     },
+    "harnessTaskCard": {
+      "title": "DeepSeek Harness 任务",
+      "pluginTag": "Bridge 插件 v{{version}} (Auto SSE)",
+      "statusReady": "就绪",
+      "statusConnecting": "连接中...",
+      "statusRunning": "运行中...",
+      "statusFinishing": "编译中...",
+      "statusCompleted": "已完成",
+      "statusFallback": "手动模式",
+      "statusCancelled": "已取消",
+      "statusError": "失败",
+      "cwdLabel": "代码库绝对路径 (CWD)：",
+      "cwdPlaceholder": "例如 A:/Users/Edige/GitHub/asistan",
+      "taskLabel": "任务描述与计划：",
+      "taskDefault": "执行任务",
+      "fallbackTitle": "Harness 手动执行（未安装 Bridge 插件）",
+      "fallbackDesc": "任务文本已复制到剪贴板！粘贴到 Harness 并按 Enter。",
+      "copyPrompt": "再次复制",
+      "openHarness": "打开 Harness",
+      "fallbackHint": "如需全自动模式，请在终端中安装 Bridge 插件：",
+      "pluginRepoButton": "Bridge 插件仓库（GitHub）",
+      "liveHeader": "实时执行流（{{count}} 个事件）",
+      "liveAssistantLabel": "实时助手输出：",
+      "logSessionCreated": "会话 {{sid}} 已在 Harness 中创建。",
+      "logToolCall": "[{{time}}] 正在运行工具：{{tool}}",
+      "logToolResult": "[{{time}}] 工具已完成：{{tool}}",
+      "logCompiling": "[{{time}}] 正在编译结果...",
+      "logComplete": "[{{time}}] 轮次完成。报告将加入下一条 AI 消息。",
+      "logCancelled": "任务已被用户取消。",
+      "reportTitle": "最终任务报告",
+      "reportCopy": "复制",
+      "reportInsert": "粘贴到聊天",
+      "autoInjectNotice": "此最终报告将自动添加到您的下一条消息的 <code>&lt;BetterDeepSeek&gt;</code> 块中。",
+      "copyFeedback": "报告已复制到剪贴板！",
+      "copyPromptFeedback": "提示词已复制到剪贴板！",
+      "copyFailed": "复制失败。",
+      "insertFeedback": "已插入聊天！",
+      "insertFallback": "已复制到剪贴板（未找到聊天输入框）",
+      "debugToggleShow": "显示详细错误日志",
+      "debugToggleHide": "隐藏详细错误日志",
+      "debugUrl": "URL：",
+      "debugError": "错误：",
+      "cancelBtn": "停止 / 取消",
+      "runExecuting": "正在 Harness 中执行...",
+      "runAgain": "重新运行",
+      "runFallback": "再次运行",
+      "runDefault": "在 DeepSeek Harness 中运行",
+      "executeFailed": "无法在 Harness 中执行会话。"
+    },
+    "deepCodeModal": {
+      "title": "DeepCode 与 Harness",
+      "subtitle": "连接本地代码库，让 DeepSeek 具备文件检查、代码搜索和自动化 Harness 任务执行能力。",
+      "activeCodebase": "当前代码库",
+      "filesIndexed": "已索引 {{count}} 个文件",
+      "linkFolder": "连接本地文件夹...",
+      "addNewDirectory": "添加新文件夹",
+      "pickFolder": "选择文件夹",
+      "indexing": "正在索引文件...",
+      "manualPathLabel": "绝对系统路径（Harness CWD）：",
+      "manualPathPlaceholder": "例如 A:/Users/Edige/GitHub/asistan",
+      "manualPathHint": "由于浏览器的安全规则，您需要重新输入路径。",
+      "savePath": "保存路径",
+      "pathSaved": "绝对路径已保存，将用作 Harness CWD。",
+      "pathMismatch": "输入的路径与所选文件夹 \"{{name}}\" 不匹配。请检查末尾的文件夹名称。",
+      "recentTitle": "最近的代码库",
+      "emptyRecent": "暂无最近文件夹。点击上方按钮连接本地文件夹。",
+      "removeHistory": "从历史记录中移除",
+      "done": "完成",
+      "closeAria": "关闭",
+      "linkedFeedback": "已连接 \"{{name}}\"（已索引 {{count}} 个文件）",
+      "selectFailed": "无法选择目录。",
+      "fsApiUnsupported": "此浏览器环境不支持文件系统访问 API。",
+      "switchedFeedback": "已切换到 \"{{name}}\"",
+      "recentNeedsPicker": "\"{{name}}\" 没有关联的文件访问权限。请使用文件夹选择器重新选择它，以启用文件读取。",
+      "cancel": "取消"
+    },
+    "deepCodeOnboarding": {
+      "title": "欢迎使用 DeepCode",
+      "harnessIntro": "DeepCode 与官方的 <strong>DeepSeek Harness</strong> 协同工作。要在您的设备上使用此功能，必须安装 <strong>DeepSeek Harness</strong>。",
+      "harnessLink": "在 GitHub 下载 DeepSeek Harness",
+      "pluginLink": "获取 Better DeepSeek Bridge 插件（GitHub）",
+      "pluginInfo": "要将 Better DeepSeek 连接到 DeepSeek Harness，需要一个 <strong>插件</strong>。如果已安装插件，一切都会完全自动进行。如果未安装，则需要手动操作。",
+      "gotIt": "明白了",
+      "closeAria": "关闭"
+    },
+    "deepCodeToggle": {
+      "label": "DeepCode",
+      "labelActive": "DeepCode：已启用",
+      "labelWithDir": "DeepCode：{{dir}}",
+      "ariaLabel": "DeepCode：本地代码库和 Harness",
+      "titleActive": "DeepCode 已启用：{{path}}",
+      "titleDefault": "DeepCode：本地代码库和 Harness 工作区",
+      "panelTitle": "DeepCode",
+      "closeAria": "关闭",
+      "integrationTitle": "代码库和 Harness 集成",
+      "integrationDesc": "注入代码库上下文并启用 DeepSeek Harness 本地任务。",
+      "enableToggle": "启用 DeepCode",
+      "disableToggle": "禁用 DeepCode",
+      "recentTitle": "最近的代码库",
+      "removeHistory": "从历史记录中移除",
+      "emptyRecents": "还没有最近的代码库。链接一个本地文件夹即可开始。",
+      "statusEnhanced": "Harness Bridge 已连接（自动 SSE）",
+      "statusFallback": "Harness 回退模式"
+    },
     "downloadCard": {
-      "download": "下载"
+      "download": "下载",
+      "viewFiles": "查看文件",
+      "hideFiles": "隐藏文件",
+      "showCode": "显示代码",
+      "hideCode": "隐藏代码"
     },
     "pptxCard": {
       "title": "PowerPoint 演示文稿",
@@ -531,6 +678,20 @@
       "sendFailed": "发送失败，请重试。",
       "cancel": "取消"
     },
+    "chartCard": {
+      "defaultTitle": "交互式图表",
+      "defaultSubtitle": "Vega-Lite 可视化",
+      "downloadPng": "下载为 PNG",
+      "downloadSvg": "下载为 SVG",
+      "downloadJson": "下载规范 (JSON)",
+      "viewCode": "查看规范",
+      "hideCode": "隐藏规范",
+      "copySpec": "复制规范",
+      "copied": "已复制！",
+      "renderError": "无法渲染图表",
+      "expand": "展开图表",
+      "collapse": "折叠图表"
+    },
     "previewPanel": {
       "close": "关闭",
       "download": "下载 .html 文件"
@@ -561,7 +722,31 @@
     },
     "mcp": {
       "detailShow": "▸ 显示详情",
-      "detailHide": "▾ 隐藏详情"
+      "detailHide": "▾ 隐藏详情",
+      "inlineMaxChars": "内联最大字符数",
+      "inlineMaxCharsHint": "MCP工具列表和结果内联发送的最大字符数。如果工具列表超出限制，多余的工具将被省略并显示计数警告。如果结果被拒绝，将尝试更短的版本。",
+      "transportNote": "注意：仅支持 HTTP/Streamable HTTP 传输。",
+      "connected": "已连接：发现 {{count}} 个工具",
+      "sectionTitle": "MCP 服务器",
+      "description": "添加远程 MCP（模型上下文协议）服务器。AI 可以发现并调用这些服务器上的工具。",
+      "test": "测试",
+      "testLoading": "测试中...",
+      "edit": "编辑",
+      "addServer": "添加 MCP 服务器",
+      "addModalTitle": "添加 MCP 服务器",
+      "editModalTitle": "编辑 MCP 服务器",
+      "nameLabel": "名称",
+      "namePlaceholder": "我的 MCP 服务器",
+      "serverUrlLabel": "服务器 URL",
+      "serverUrlPlaceholder": "https://example.com/mcp",
+      "apiKeyLabel": "API 密钥（可选）",
+      "apiKeyPlaceholder": "sk-...",
+      "enabledLabel": "启用",
+      "cancel": "取消",
+      "save": "保存",
+      "deleteConfirm": "删除 MCP 服务器“{{name}}”？",
+      "testFailed": "MCP 测试失败：{{message}}",
+      "toolsCount": "{{count}} 个工具"
     },
     "expandToggle": {
       "expand": "展开",
@@ -580,8 +765,12 @@
       "skillActive": "当前技能：<strong>{{name}}</strong>",
       "webFetchRequested": "正在抓取网页",
       "githubFetchRequested": "正在抓取 GitHub 仓库",
-      "searchRequested": "正在调用 DuckDuckGo 搜索…",
-      "memoryStored": "已存储记忆（{{count}} 条）。"
+      "searchRequested": "正在使用 {{provider}} 搜索…",
+      "fileReadRequested": "正在读取代码库文件…",
+      "directorySearchRequested": "正在搜索代码库…",
+      "directoryListRequested": "正在列出目录…",
+      "memoryStored": "已存储记忆（{{count}} 条）。",
+      "downloadMd": "下载为 .md"
     },
     "sidebarMenu": {
       "tags": "标签（BDS）",
@@ -766,6 +955,53 @@
       "seeAllChanges": "在 GitHub 上查看 v{{version}} 的全部变更",
       "seeDetailed": "在 GitHub 上查看详细发布说明",
       "features": {
+        "v0_1_13": {
+          "title": "紧急热修复 1",
+          "features": {
+            "feat_0": {
+              "title": "崩溃修复",
+              "description": "DeepSeek 近期的更新导致扩展异常崩溃。我们紧急发布了修复补丁以恢复关键功能。我们正在密切跟进，后续将按需发布进一步的优化热修。"
+            },
+            "feat_1": {
+              "title": "搜索引擎列表",
+              "description": "现在可以在设置中按需自定义、排序和优先使用搜索引擎（Bing 与 DuckDuckGo）。"
+            }
+          }
+        },
+        "v0_1_12": {
+          "title": "DeepCode、消息队列与稳定性",
+          "features": {
+            "feat_0": {
+              "title": "DeepCode（实验性）",
+              "description": "与 DeepSeek Harness 协作的代码模式。在 DeepSeek 中规划任务并通过 <a href='https://github.com/EdgeTypE/dsh-better-deepseek' target='_blank' style='color: #4d6bfe; text-decoration: underline;'>dsh-better-deepseek</a> 插件直接发送至 Harness。"
+            },
+            "feat_1": {
+              "title": "提示词排队（Queued Prompts）",
+              "description": "在 DeepSeek 生成内容时发送消息，BDS 将自动排队并在生成完成后立即发送。"
+            },
+            "feat_2": {
+              "title": "稳定性与体验优化",
+              "description": "修复 DeepSeek 界面更新引起的解析器问题，支持下载已创建的技能/角色，以及多项稳定性改进。"
+            }
+          }
+        },
+        "v0_1_11": {
+          "title": "MCP \u670D\u52A1\u5668\u3001\u52A8\u6001\u8868\u683C\u4E0E\u7A33\u5B9A\u6027\u6539\u8FDB",
+          "features": {
+            "feat_0": {
+              "title": "MCP \u670D\u52A1\u5668\u652F\u6301",
+              "description": "\u5C06\u8FDC\u7A0B MCP \u670D\u52A1\u5668\u8FDE\u63A5\u5230 DeepSeek \u4EE5\u83B7\u53D6\u5916\u90E8\u5DE5\u5177\u8BBF\u95EE\u3002\u5728\u8BBE\u7F6E \u2192 \u9AD8\u7EA7\u8BBE\u7F6E \u2192 MCP \u670D\u52A1\u5668\u4E2D\u914D\u7F6E\u670D\u52A1\u5668\u3002"
+            },
+            "feat_1": {
+              "title": "\u52A8\u6001\u8868\u683C",
+              "description": "\u76F4\u63A5\u5728 DeepSeek \u751F\u6210\u7684\u8868\u683C\u4E2D\u6392\u5E8F\u6570\u636E\u548C\u91CD\u65B0\u6392\u5217\u5217\u3002"
+            },
+            "feat_2": {
+              "title": "\u7A33\u5B9A\u6027\u4E0E\u7528\u6237\u4F53\u9A8C\u6539\u8FDB",
+              "description": "\u6269\u5C55\u4E2D\u6570\u5341\u4E2A\u9519\u8BEF\u4FEE\u590D\u548C UI/UX \u6539\u8FDB\u3002"
+            }
+          }
+        },
         "v0_1_10": {
           "title": "稳定性与改进",
           "features": {
@@ -998,7 +1234,8 @@
       "en": "English",
       "tr": "Türkçe",
       "ru": "Русский",
-      "zh-cn": "简体中文"
+      "zh-cn": "简体中文",
+      "fa": "فارسی"
     },
     "apiPlayground": {
       "title": "API 实验场",
@@ -1098,6 +1335,60 @@
       "betaFeatureDescription": "Beta 端点功能，请谨慎使用。",
       "codeGen": "代码生成",
       "promptSuffix": "提示词后缀"
+    },
+    "queue": {
+      "title": "队列消息",
+      "waitingForAI": "等待 AI 生成...",
+      "sendingNext": "正在发送下一条...",
+      "clearAll": "清空全部",
+      "addToQueue": "加入队列",
+      "enterToQueueTip": "AI 正在生成，按 Enter 将提示词加入队列。",
+      "moveUp": "上移",
+      "moveDown": "下移",
+      "itemCount.one": "{{count}} 条消息",
+      "itemCount.other": "{{count}} 条消息"
+    },
+    "deepResearchRevision": {
+      "title": "请求修改计划",
+      "run": "运行：{{id}}",
+      "closeAria": "关闭 Deep Research 修订",
+      "placeholder": "描述研究计划中需要更改的内容...",
+      "cancel": "取消",
+      "submit": "提交反馈",
+      "cancelledToast": "Deep Research 修订已取消。"
+    },
+    "tableInjector": {
+      "columnOptions": "\u5217\u9009\u9879",
+      "hideRow": "\u9690\u85CF\u884C",
+      "manageColumnsRows": "\u7BA1\u7406\u5217\u548C\u884C",
+      "sortAsc": "\u25B2 \u5347\u5E8F\u6392\u5E8F A\u2192Z",
+      "sortDesc": "\u25BC \u964D\u5E8F\u6392\u5E8F Z\u2192A",
+      "hideColumn": "\u9690\u85CF\u5217",
+      "showColumn": "\u663E\u793A\u5217",
+      "columns": "\u5217",
+      "hiddenRows": "\u9690\u85CF\u7684\u884C ({{count}})",
+      "showAll": "\u663E\u793A\u6240\u6709\u5217\u548C\u884C",
+      "columnLabel": "\u5217 {{n}}"
+    },
+    "shareModal": {
+      "searchEngineWarning": "共享的对话可能会被搜索引擎发现并索引。"
+    },
+    "tips": {
+      "title": "\uD83D\uDCA1 \u63D0\u793A",
+      "disableInSettings": "\u60A8\u53EF\u4EE5\u5728\u8BBE\u7F6E\u4E2D\u5173\u95ED\u6B64\u529F\u80FD\u3002",
+      "0": "\u8981\u5BFC\u51FA\u804A\u5929\u8BB0\u5F55\uFF0C\u8BF7\u70B9\u51FB\u804A\u5929\u5386\u53F2\u4E2D\u4F1A\u8BDD\u65C1\u8FB9\u7684 ... \u6309\u94AE\u3002",
+      "1": "\u60A8\u53EF\u4EE5\u5728\u8BBE\u7F6E\u4E2D\u5173\u95ED\u6B64\u63D0\u793A\u6846\u3002",
+      "2": "\u60A8\u53EF\u4EE5\u5BFC\u51FA\u5F53\u524D\u8BBE\u7F6E\u548C\u6570\u636E\u3002\u8BF7\u8BBF\u95EE\u9AD8\u7EA7\u8BBE\u7F6E\u90E8\u5206\u3002",
+      "3": "\u5C06\u5E38\u7528\u63D0\u793A\u4FDD\u5B58\u4E3A\u7247\u6BB5\uFF0C\u4EE5\u540E\u53EF\u4EE5\u8F7B\u677E\u518D\u6B21\u53D1\u9001\u3002\u60A8\u751A\u81F3\u53EF\u4EE5\u5C06\u7247\u6BB5\u5206\u914D\u7ED9 \"/\" \u547D\u4EE4\u4EE5\u52A0\u5FEB\u64CD\u4F5C\u901F\u5EA6\u3002\u8BE6\u60C5\u8BF7\u8BBF\u95EE BDS \u62BD\u5C49\u4E2D\u7684\u7247\u6BB5\u9009\u9879\u5361\u3002",
+      "4": "\u60A8\u77E5\u9053\u5417\uFF1F\u60A8\u53EF\u4EE5\u6FC0\u6D3B\u591A\u7CFB\u7EDF\u63D0\u793A\u6A21\u5F0F\uFF0C\u540C\u65F6\u4F7F\u7528\u591A\u4E2A\u7CFB\u7EDF\u63D0\u793A\uFF0C\u914D\u5408\u5404\u79CD\u65F6\u95F4\u8868\u548C\u6761\u4EF6\uFF0C\u521B\u5EFA\u81EA\u5B9A\u4E49\u5DE5\u4F5C\u6D41\u7A0B\u3002",
+      "5": "\u60A8\u53EF\u4EE5\u4ECE\u5176\u4ED6 AI \u5C06\u8BB0\u5FC6\u5BFC\u5165 BDS\u3002\u70B9\u51FB\u8BB0\u5FC6\u90E8\u5206\u5E95\u90E8\u7684\u300C\u4ECE\u5176\u4ED6 AI \u5BFC\u5165\u8BB0\u5FC6\u300D\u3002",
+      "6": "\u60A8\u77E5\u9053\u5417\uFF1FBetter DeepSeek \u4E5F\u6709 <a href=\"https://github.com/EdgeTypE/better-deepseek\" target=\"_blank\" rel=\"noopener noreferrer\">Android \u5E94\u7528</a>\uFF1F",
+      "7": "\u5982\u679C\u60A8\u559C\u6B22\u8FD9\u4E2A\u6269\u5C55\uFF0C\u8BF7\u4E0E\u670B\u53CB\u5206\u4EAB\uFF01\u8981\u8BF7\u6C42\u529F\u80FD\uFF0C\u8BF7\u5728 <a href=\"https://github.com/EdgeTypE/better-deepseek\" target=\"_blank\" rel=\"noopener noreferrer\">GitHub \u9875\u9762</a>\u4E0A\u544A\u8BC9\u6211\u4EEC\u3002",
+      "8": "\u60A8\u77E5\u9053\u5417\uFF1F\u60A8\u53EF\u4EE5\u5C06 MCP \u670D\u52A1\u5668\u8FDE\u63A5\u5230 Better DeepSeek\u3002\u8BF7\u67E5\u770B\u9AD8\u7EA7\u8BBE\u7F6E\u3002",
+      "9": "\u60A8\u53EF\u4EE5\u4F7F\u7528\u81EA\u5B9A\u4E49 CSS \u968F\u610F\u5B9A\u5236\u754C\u9762\u3002",
+      "10": "\u6211\u4EEC\u5E0C\u671B\u4E3A Better DeepSeek \u6DFB\u52A0\u66F4\u591A\u8BED\u8A00\u652F\u6301\u3002\u5982\u679C\u60A8\u60F3\u6DFB\u52A0\u81EA\u5DF1\u7684\u8BED\u8A00\uFF0C\u8BF7<a href=\"https://github.com/EdgeTypE/better-deepseek/blob/main/LOCALIZATION.md\" target=\"_blank\" rel=\"noopener noreferrer\">\u67E5\u770B\u8FD9\u91CC</a>\u3002\u53E6\u5916\uFF0C\u5982\u679C\u60A8\u53D1\u73B0\u4EFB\u4F55\u7FFB\u8BD1\u9519\u8BEF\uFF0C\u53EF\u4EE5\u4FEE\u590D\u5B83\u4EEC\u3002",
+      "11": "\u60A8\u53EF\u4EE5\u901A\u8FC7\u5355\u51FB\u4F1A\u8BDD\u5386\u53F2\u4E2D\u7684 ... \u6309\u94AE\u4E3A\u4EFB\u4F55\u804A\u5929\u4F1A\u8BDD\u5206\u914D\u6807\u7B7E\u3002\u7136\u540E\u4F7F\u7528\u8FD9\u4E9B\u6807\u7B7E\u5FEB\u901F\u641C\u7D22\u6216\u8FC7\u6EE4\u60A8\u7684\u5BF9\u8BDD\u3002",
+      "12": "\u4F60\u53EF\u4EE5\u76F4\u63A5\u8BA9 DeepSeek \u521B\u5EFA\u65B0\u6280\u80FD\u6216\u89D2\u8272\u3002\u53EA\u9700\u8BF4\u51FA\u4F60\u7684\u9700\u6C42\u5373\u53EF\u3002"
     }
   }
 }

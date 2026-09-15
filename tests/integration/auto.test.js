@@ -26,6 +26,7 @@ vi.mock("../../src/content/files/youtube-reader.js", () => ({
 }));
 vi.mock("../../src/content/files/search-reader.js", () => ({
   searchWeb: readerMocks.searchWeb,
+  resolveSearchProviders: (preferred) => preferred || [],
 }));
 
 function setupAutoDom() {
@@ -764,7 +765,12 @@ describe("auto integration", () => {
     const editor = document.querySelector("#chat-input");
     const sendButton = document.querySelector("button");
 
-    expect(readerMocks.searchWeb).toHaveBeenCalledWith("test query", 3, expect.any(Function), {});
+    expect(readerMocks.searchWeb).toHaveBeenCalledWith(
+      "test query",
+      3,
+      expect.any(Function),
+      { providers: ["ddg-lite", "ddg-html", "bing"] }
+    );
     expect(input.files).toHaveLength(1);
     expect(editor.value).toContain("Search Result");
     expect(editor.value).toContain("[BDS:AUTO_SEARCH_RESULT]");
@@ -806,7 +812,7 @@ describe("auto integration", () => {
       "same query",
       0,
       expect.any(Function),
-      { purpose: "overview", sourceType: "general" }
+      expect.objectContaining({ purpose: "overview", sourceType: "general" })
     );
   });
 
@@ -915,5 +921,149 @@ describe("auto integration", () => {
     expect(readerMocks.searchWeb).toHaveBeenCalledTimes(2);
     const runQueries = getRunSearchQueries("run-injection");
     expect(runQueries?.size).toBe(1);
+  });
+});
+
+describe("handleAutoMcpCall", () => {
+  beforeEach(() => {
+    resetAppState();
+    setupAutoDom();
+    vi.useFakeTimers();
+    globalThis.chrome.runtime.sendMessage.mockReset();
+  });
+
+  it("injects file and formatted message on successful MCP call", async () => {
+    globalThis.chrome.runtime.sendMessage.mockImplementation((msg, cb) => {
+      if (cb) cb({ ok: true, result: { content: [{ text: "Hello from MCP" }] } });
+    });
+
+    state.mcpServers = [{
+      id: "s1", name: "Test Server", serverUrl: "https://mcp.example.com",
+      apiKey: "sk-test", enabled: true, tools: [], createdAt: Date.now(),
+    }];
+
+    const { handleAutoMcpCall } = await importAutoModule();
+    const callPromise = handleAutoMcpCall("https://mcp.example.com", "greet", { name: "World" });
+    await vi.advanceTimersByTimeAsync(2000);
+    await callPromise;
+
+    const editor = document.querySelector("#chat-input");
+    expect(editor.value).toContain("[BDS:AUTO_MCP_RESULT]");
+    expect(editor.value).toContain("greet");
+    expect(editor.value).toContain("Hello from MCP");
+
+    const input = document.querySelector('input[type="file"]');
+    expect(input.files).toHaveLength(1);
+    expect(input.files[0].name).toContain("mcp_result_greet.txt");
+  });
+
+  it("injects error message on failed MCP call", async () => {
+    globalThis.chrome.runtime.sendMessage.mockImplementation((msg, cb) => {
+      if (cb) cb({ ok: false, error: "Connection refused" });
+    });
+
+    state.mcpServers = [{
+      id: "s2", name: "Fail Server", serverUrl: "https://fail.example.com",
+      apiKey: "", enabled: true, tools: [], createdAt: Date.now(),
+    }];
+
+    const { handleAutoMcpCall } = await importAutoModule();
+    const callPromise = handleAutoMcpCall("https://fail.example.com", "fail_tool", {});
+    await vi.advanceTimersByTimeAsync(2000);
+    await callPromise;
+
+    const editor = document.querySelector("#chat-input");
+    expect(editor.value).toContain("[BDS:AUTO_MCP_ERROR]");
+    expect(editor.value).toContain("fail_tool");
+    expect(editor.value).toContain("Connection refused");
+
+    const input = document.querySelector('input[type="file"]');
+    expect(input.files).toHaveLength(0);
+  });
+
+  describe("handleAutoListDir", () => {
+    async function importWithPaths(paths) {
+      const autoModule = await importAutoModule();
+      const freshState = (await import("../../src/content/state.js")).default;
+      freshState.deepCode.paths = paths;
+      return autoModule;
+    }
+
+    it("injects a directory listing of the immediate children", async () => {
+      const { handleAutoListDir } = await importWithPaths([
+        "README.md",
+        "dataset/train.txt",
+        "models/encoder.js",
+        "src/index.js",
+        "src/utils/helpers.js",
+        "src/utils/parse.js",
+        "assets/",
+      ]);
+      const callPromise = handleAutoListDir("src");
+      await vi.advanceTimersByTimeAsync(600);
+      await callPromise;
+
+      const editor = document.querySelector("#chat-input");
+      expect(editor.value).toContain("[BDS:AUTO_DIR_LIST_RESULT]");
+      expect(editor.value).toContain("[/BDS:AUTO_DIR_LIST_RESULT]");
+      expect(editor.value).toContain('"path":"src"');
+      expect(editor.value).toContain('"childCount":2');
+      expect(editor.value).toContain("DIR  utils/");
+      expect(editor.value).toContain("FILE index.js");
+      expect(editor.value).not.toContain("helpers.js");
+      expect(editor.value).not.toContain("dataset/");
+    });
+
+    it("lists the root when the path is empty or '.'", async () => {
+      const { handleAutoListDir } = await importWithPaths([
+        "README.md",
+        "src/index.js",
+        "dataset/train.txt",
+        "models/encoder.js",
+      ]);
+      const callPromise = handleAutoListDir("");
+      await vi.advanceTimersByTimeAsync(600);
+      await callPromise;
+
+      const editor = document.querySelector("#chat-input");
+      expect(editor.value).toContain('[BDS:AUTO] Directory listing for path: "/"');
+      expect(editor.value).toContain("DIR  src/");
+      expect(editor.value).toContain("DIR  dataset/");
+      expect(editor.value).toContain("FILE README.md");
+    });
+
+    it("injects an error when the path is a file, not a directory", async () => {
+      const { handleAutoListDir } = await importWithPaths(["README.md", "src/index.js"]);
+      const callPromise = handleAutoListDir("README.md");
+      await vi.advanceTimersByTimeAsync(600);
+      await callPromise;
+
+      const editor = document.querySelector("#chat-input");
+      expect(editor.value).toContain('"error":"\\"README.md\\" is a file, not a directory."');
+      expect(editor.value).toContain("it is a file, not a directory");
+    });
+
+    it("injects an error when the directory is not found", async () => {
+      const { handleAutoListDir } = await importWithPaths(["src/index.js"]);
+      const callPromise = handleAutoListDir("missing");
+      await vi.advanceTimersByTimeAsync(600);
+      await callPromise;
+
+      const editor = document.querySelector("#chat-input");
+      expect(editor.value).toContain('"error":"Directory \\"missing\\" was not found in the active codebase."');
+    });
+
+    it("does not re-list the same directory twice", async () => {
+      const { handleAutoListDir } = await importWithPaths(["src/index.js", "src/utils/helpers.js"]);
+      let callPromise = handleAutoListDir("src");
+      await vi.advanceTimersByTimeAsync(600);
+      await callPromise;
+      document.querySelector("#chat-input").value = "";
+
+      await handleAutoListDir("src");
+
+      const editor = document.querySelector("#chat-input");
+      expect(editor.value).toBe("");
+    });
   });
 });

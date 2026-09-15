@@ -5,11 +5,13 @@
 
 import { devLog } from "../lib/dev-log.js";
 import { fetchAndConvertWebPage } from "./files/web-reader.js";
-import { searchWeb } from "./files/search-reader.js";
+import { searchWeb, resolveSearchProviders } from "./files/search-reader.js";
 import { fetchGitHubRepo } from "./files/github-reader.js";
 import { fetchTwitterTweet } from "./files/twitter-reader.js";
 import { fetchYouTubeData } from "./files/youtube-reader.js";
 import appState from "./state.js";
+import { getDeepCodeFiles } from "./deep-code.js";
+import { searchActiveProjectRAG } from "../lib/rag-engine.js";
 import { XLSX_SKILL } from "../lib/office-skills/xlsx.js";
 import { PPTX_SKILL } from "../lib/office-skills/pptx.js";
 import { DOCX_SKILL } from "../lib/office-skills/docx.js";
@@ -28,8 +30,250 @@ const processedTwitterFetches = new Set();
 const processedYouTubeFetches = new Set();
 const processedSearchQueries = new Set();
 const processedMcpCalls = new Set();
+const processedFileReads = new Set();
+const processedDirSearches = new Set();
+const processedDirLists = new Set();
 // Per-run search deduplication for deep research
 const processedRunSearchQueries = new Map();
+
+export async function handleAutoFileRead(filePath) {
+  const cleanPath = String(filePath || "").trim().replace(/\\/g, "/");
+  if (!cleanPath) return;
+
+  if (processedFileReads.has(cleanPath)) return;
+  processedFileReads.add(cleanPath);
+
+  devLog("Auto", `Starting automatic file read for: ${cleanPath}`);
+  const files = getDeepCodeFiles();
+  const matchedFile = files.find(f => 
+    f.name.replace(/\\/g, "/").toLowerCase().endsWith(cleanPath.toLowerCase()) ||
+    f.name.replace(/\\/g, "/").toLowerCase() === cleanPath.toLowerCase()
+  );
+
+  if (matchedFile) {
+    const blob = new Blob([matchedFile.content], { type: "text/plain" });
+    const fileName = matchedFile.name.split("/").pop() || "file.txt";
+    const fileObj = new File([blob], fileName, { type: "text/plain" });
+    const payload = JSON.stringify({
+      path: cleanPath,
+      fileName: matchedFile.name,
+      linesCount: matchedFile.content.split("\n").length,
+      success: true,
+      content: matchedFile.content
+    });
+    await injectFileAndSend(
+      fileObj,
+      `<BetterDeepSeek>\n[BDS:AUTO_FILE_READ_RESULT]\n${payload}\n[/BDS:AUTO_FILE_READ_RESULT]\n[BDS:AUTO] File Read Result for path: "${cleanPath}"\n</BetterDeepSeek>`
+    );
+  } else {
+    devLog("Auto", `File not found in active codebase: ${cleanPath}`);
+    const payload = JSON.stringify({
+      path: cleanPath,
+      fileName: cleanPath.split("/").pop() || cleanPath,
+      linesCount: 0,
+      success: false,
+      error: "File was not found in the active codebase directory."
+    });
+    await sendPromptToChat(
+      `<BetterDeepSeek>\n[BDS:AUTO_FILE_READ_RESULT]\n${payload}\n[/BDS:AUTO_FILE_READ_RESULT]\n[BDS:AUTO] File read requested for "${cleanPath}", but file was not found in the active codebase directory.\n</BetterDeepSeek>`,
+      "File read error"
+    );
+  }
+}
+
+export async function handleAutoSearchInDirectory(queries) {
+  const cleanQueries = String(queries || "").trim();
+  if (!cleanQueries) return;
+
+  if (processedDirSearches.has(cleanQueries)) return;
+  processedDirSearches.add(cleanQueries);
+
+  devLog("Auto", `Starting directory search for: ${cleanQueries}`);
+  const files = getDeepCodeFiles();
+
+  if (!files || files.length === 0) {
+    const payload = JSON.stringify({
+      query: cleanQueries,
+      count: 0,
+      results: [],
+      error: "No active directory is linked in DeepCode."
+    });
+    await sendPromptToChat(
+      `<BetterDeepSeek>\n[BDS:AUTO_DIR_SEARCH_RESULT]\n${payload}\n[/BDS:AUTO_DIR_SEARCH_RESULT]\n[BDS:AUTO] Directory search requested for "${cleanQueries}", but no active directory is linked in DeepCode.\n</BetterDeepSeek>`,
+      "Directory search error"
+    );
+    return;
+  }
+
+  // Split multiple search queries if separated by commas, semicolons, or newlines
+  const subQueries = cleanQueries
+    .split(/[,;\n]+/)
+    .map(q => q.trim())
+    .filter(Boolean);
+
+  if (subQueries.length === 0) {
+    subQueries.push(cleanQueries);
+  }
+
+  const allResults = [];
+  const seenChunkKeys = new Set();
+  const querySections = [];
+
+  for (const q of subQueries) {
+    const queryResults = searchActiveProjectRAG(q, files, 4);
+    const formattedQueryResults = [];
+    for (const r of queryResults) {
+      const chunkKey = `${r.fileName}:${r.startLine}:${r.endLine}`;
+      const item = {
+        query: q,
+        fileName: r.fileName,
+        startLine: r.startLine,
+        endLine: r.endLine,
+        score: r.score,
+        content: r.content
+      };
+      formattedQueryResults.push(item);
+      if (!seenChunkKeys.has(chunkKey)) {
+        seenChunkKeys.add(chunkKey);
+        allResults.push(item);
+      }
+    }
+    querySections.push({ query: q, results: formattedQueryResults });
+  }
+
+  const payload = JSON.stringify({
+    query: cleanQueries,
+    count: allResults.length,
+    results: allResults
+  });
+
+  let reportMarkdown = `## Codebase Search Results for: "${cleanQueries}"\n\n`;
+  for (const section of querySections) {
+    reportMarkdown += `### Search Query: "${section.query}"\n`;
+    if (section.results.length === 0) {
+      reportMarkdown += `No relevant code chunks found for query "${section.query}".\n\n`;
+    } else {
+      reportMarkdown += section.results.map((r, idx) => {
+        const ext = r.fileName.split('.').pop() || '';
+        return `#### Match ${idx + 1}: ${r.fileName} (Lines ${r.startLine}-${r.endLine}, Score: ${r.score.toFixed(2)})\n\`\`\`${ext}\n${r.content}\n\`\`\``;
+      }).join("\n\n") + "\n\n";
+    }
+  }
+
+  const autoMessage = `<BetterDeepSeek>\n[BDS:AUTO_DIR_SEARCH_RESULT]\n${payload}\n[/BDS:AUTO_DIR_SEARCH_RESULT]\n[BDS:AUTO] Codebase Search Results for: "${cleanQueries}"\n\n${reportMarkdown}\n</BetterDeepSeek>`;
+
+  // If results are large, attach as a markdown file so it never overflows composer limits, otherwise send inline
+  if (reportMarkdown.length > 3000) {
+    const blob = new Blob([reportMarkdown], { type: "text/markdown" });
+    const searchFile = new File([blob], `codebase_search_${Date.now()}.md`, { type: "text/markdown" });
+    const shortAutoMessage = `<BetterDeepSeek>\n[BDS:AUTO_DIR_SEARCH_RESULT]\n${payload}\n[/BDS:AUTO_DIR_SEARCH_RESULT]\n[BDS:AUTO] Codebase Search Results for: "${cleanQueries}" (Found ${allResults.length} matches across ${subQueries.length} query terms)\n</BetterDeepSeek>`;
+    await injectFileAndSend(searchFile, shortAutoMessage);
+  } else {
+    await sendPromptToChat(autoMessage, "Codebase search results");
+  }
+}
+
+export async function handleAutoListDir(path) {
+  const raw = String(path || "").trim().replace(/\\/g, "/");
+  const cleanPath = raw
+    .replace(/^\/+|(?:\/)+$/g, "")
+    .replace(/^\.\/+/, "")
+    .replace(/^\.$/, "");
+
+  if (processedDirLists.has(cleanPath)) return;
+  processedDirLists.add(cleanPath);
+
+  devLog("Auto", `Starting automatic directory listing for: ${cleanPath || "/"}`);
+  const paths = appState.deepCode.paths || [];
+
+  if (!paths || paths.length === 0) {
+    const payload = JSON.stringify({
+      path: cleanPath || "/",
+      success: false,
+      childCount: 0,
+      entries: [],
+      error: "No active directory is linked in DeepCode.",
+    });
+    await sendPromptToChat(
+      `<BetterDeepSeek>\n[BDS:AUTO_DIR_LIST_RESULT]\n${payload}\n[/BDS:AUTO_DIR_LIST_RESULT]\n[BDS:AUTO] Directory listing requested for "${cleanPath || "/"}", but no active directory is linked in DeepCode.\n</BetterDeepSeek>`,
+      "Directory listing error"
+    );
+    return;
+  }
+
+  const isFilePath = paths.some((p) => p.replace(/\\/g, "/") === cleanPath);
+  if (isFilePath) {
+    const payload = JSON.stringify({
+      path: cleanPath,
+      success: false,
+      childCount: 0,
+      entries: [],
+      error: `"${cleanPath}" is a file, not a directory.`,
+    });
+    await sendPromptToChat(
+      `<BetterDeepSeek>\n[BDS:AUTO_DIR_LIST_RESULT]\n${payload}\n[/BDS:AUTO_DIR_LIST_RESULT]\n[BDS:AUTO] Directory listing requested for "${cleanPath}", but it is a file, not a directory.\n</BetterDeepSeek>`,
+      "Directory listing error"
+    );
+    return;
+  }
+
+  const prefix = cleanPath ? `${cleanPath}/` : "";
+  const dirExists = cleanPath === "" || paths.some((p) => p.replace(/\\/g, "/").startsWith(prefix));
+  if (!dirExists) {
+    const payload = JSON.stringify({
+      path: cleanPath,
+      success: false,
+      childCount: 0,
+      entries: [],
+      error: `Directory "${cleanPath}" was not found in the active codebase.`,
+    });
+    await sendPromptToChat(
+      `<BetterDeepSeek>\n[BDS:AUTO_DIR_LIST_RESULT]\n${payload}\n[/BDS:AUTO_DIR_LIST_RESULT]\n[BDS:AUTO] Directory listing requested for "${cleanPath}", but it was not found in the active codebase.\n</BetterDeepSeek>`,
+      "Directory listing error"
+    );
+    return;
+  }
+
+  const children = new Map();
+  for (const entry of paths) {
+    const norm = entry.replace(/\\/g, "/");
+    if (prefix && !norm.startsWith(prefix)) continue;
+    const rest = norm.slice(prefix.length);
+    if (!rest) continue;
+    const segments = rest.split("/");
+    const first = segments[0];
+    if (!first) continue;
+    const isDir = entry.endsWith("/") || segments.length > 1;
+    const key = isDir ? `${first}/` : first;
+    if (!children.has(key)) children.set(key, isDir ? "dir" : "file");
+  }
+
+  const entries = Array.from(children.entries())
+    .sort((a, b) => {
+      if (a[1] !== b[1]) return a[1] === "dir" ? -1 : 1;
+      return a[0].localeCompare(b[0]);
+    })
+    .map(([name, type]) => ({ name, type }));
+
+  let listing = `## Directory Listing: "${cleanPath || "/"}"\n\n`;
+  if (entries.length === 0) {
+    listing += "This directory is empty (or contains no indexed text files).\n";
+  } else {
+    listing += entries.map((e) => `- ${e.type === "dir" ? "DIR " : "FILE"} ${e.name}`).join("\n") + "\n";
+  }
+
+  const payload = JSON.stringify({
+    path: cleanPath || "/",
+    success: true,
+    isDirectory: true,
+    childCount: entries.length,
+    entries,
+    listing,
+  });
+
+  const autoMessage = `<BetterDeepSeek>\n[BDS:AUTO_DIR_LIST_RESULT]\n${payload}\n[/BDS:AUTO_DIR_LIST_RESULT]\n[BDS:AUTO] Directory listing for path: "${cleanPath || "/"}"\n\n${listing}\n</BetterDeepSeek>`;
+  await sendPromptToChat(autoMessage, "Directory listing");
+}
 
 function normalizeSearchKeyPart(value) {
   return String(value || "").replace(/\s+/g, " ").trim();
@@ -181,7 +425,19 @@ export async function handleAutoYouTubeFetch(url) {
 }
 
 /**
- * Handles automatic web search requests via DuckDuckGo Lite.
+ * Broadcast a search status so UI cards (e.g. the auto:search request card)
+ * can live-update which provider is currently being queried.
+ */
+function emitSearchStatus(query, provider, phase, detail = "") {
+  try {
+    window.dispatchEvent(new CustomEvent("bds:search-status", {
+      detail: { query: normalizeSearchKeyPart(query), provider, phase, detail },
+    }));
+  } catch { /* non-DOM environment — ignore */ }
+}
+
+/**
+ * Handles automatic web search requests using the user-configured search providers.
  * @param {string} query - Search query
  * @param {number} [deepFetch=0] - Number of top results to also fetch full content for
  * @param {{ purpose?: string, sourceType?: "general"|"docs"|"news"|"reviews"|"academic"|"commerce" }} [options]
@@ -195,9 +451,13 @@ export async function handleAutoSearch(query, deepFetch = 0, options = {}) {
   devLog("Auto", `Starting automatic search for: ${q}${deepFetch > 0 ? ` (deepFetch=${deepFetch})` : ""}`);
 
   try {
-    const result = await searchWeb(q, deepFetch, (status) => {
+    const result = await searchWeb(q, deepFetch, (status, info) => {
       devLog("Auto", `Search Status: ${status}`);
-    }, options);
+      emitSearchStatus(q, info?.provider || "", info?.phase || "", status);
+    }, {
+      ...options,
+      providers: resolveSearchProviders(appState.settings?.searchProviders),
+    });
 
     if (!result?.file) {
       throw new Error("Search returned no file.");
@@ -211,6 +471,7 @@ export async function handleAutoSearch(query, deepFetch = 0, options = {}) {
       provider: result.provider,
       effectiveQuery: result.effectiveQuery,
       rawResultCount: result.rawResultCount,
+      lowConfidence: result.lowConfidence === true,
       purpose: options.purpose,
       sourceType: options.sourceType,
     });
@@ -262,9 +523,13 @@ export async function handleAutoSearchForRun(query, deepFetch = 0, runId = "", o
   devLog("Auto", `Starting run-scoped search for: ${q} (runId=${runId}, deepFetch=${deepFetch})`);
 
   try {
-    const result = await searchWeb(q, deepFetch, (status) => {
+    const result = await searchWeb(q, deepFetch, (status, info) => {
       devLog("Auto", `Search Status: ${status}`);
-    }, options);
+      emitSearchStatus(q, info?.provider || "", info?.phase || "", status);
+    }, {
+      ...options,
+      providers: resolveSearchProviders(appState.settings?.searchProviders),
+    });
 
     if (!result?.file) {
       throw new Error("Search returned no file.");
@@ -278,6 +543,7 @@ export async function handleAutoSearchForRun(query, deepFetch = 0, runId = "", o
       provider: result.provider,
       effectiveQuery: result.effectiveQuery,
       rawResultCount: result.rawResultCount,
+      lowConfidence: result.lowConfidence === true,
       purpose: options.purpose,
       sourceType: options.sourceType,
       runId,
@@ -378,7 +644,20 @@ export async function handleAutoErrorReport(toolName, error, originalCode) {
   await injectPureTextAndSend(autoMessage);
 }
 
+function stripMarkdown(url) {
+  const m = url.match(/^\[([^\]]+)\]\(([^)]+)\)$/);
+  return m ? m[2] : url;
+}
+function stripQuery(url) {
+  try { return url.split("?")[0]; } catch { return url; }
+}
+
+let mcpQueue = Promise.resolve();
+
 export async function handleAutoMcpCall(serverUrl, toolName, args = {}) {
+  const task = async () => {
+  serverUrl = stripMarkdown(serverUrl.trim());
+
   const dedupeKey = `${serverUrl}|${toolName}|${JSON.stringify(args)}`;
   if (processedMcpCalls.has(dedupeKey)) return;
   processedMcpCalls.add(dedupeKey);
@@ -389,7 +668,11 @@ export async function handleAutoMcpCall(serverUrl, toolName, args = {}) {
 
   devLog("Auto", `Starting MCP call: ${toolName} @ ${serverUrl}`);
 
-  const server = appState.mcpServers.find(s => s.serverUrl === serverUrl || s.name === serverUrl);
+  const server = appState.mcpServers.find(s =>
+    s.serverUrl === serverUrl ||
+    s.name === serverUrl ||
+    stripQuery(s.serverUrl) === stripQuery(serverUrl)
+  );
   const apiKey = server?.apiKey || "";
   const actualUrl = server?.serverUrl || serverUrl;
 
@@ -398,7 +681,10 @@ export async function handleAutoMcpCall(serverUrl, toolName, args = {}) {
       chrome.runtime.sendMessage(
         { type: "bds-mcp-call", serverUrl: actualUrl, apiKey, toolName, args },
         (response) => {
-          if (response?.ok) resolve(response.result);
+          if (chrome.runtime.lastError) {
+            console.error("[BDS:AUTO:MCP] runtime.lastError:", chrome.runtime.lastError.message);
+            reject(new Error(chrome.runtime.lastError.message));
+          } else if (response?.ok) resolve(response.result);
           else reject(new Error(response?.error || "MCP call failed"));
         }
       );
@@ -408,7 +694,7 @@ export async function handleAutoMcpCall(serverUrl, toolName, args = {}) {
       ? result.content.map(c => c.text || "").filter(Boolean).join("\n")
       : JSON.stringify(result);
 
-    const MAX_INLINE = 8000;
+    const MAX_INLINE = Number(appState.settings?.mcpInlineMaxChars) || 8000;
     const inlineContent = textContent.length > MAX_INLINE
       ? textContent.slice(0, MAX_INLINE) + "\n\n...[truncated, full content in attached file]..."
       : textContent;
@@ -436,14 +722,24 @@ export async function handleAutoMcpCall(serverUrl, toolName, args = {}) {
   } catch (err) {
     console.error("[BDS:AUTO] MCP Call Failed:", err);
     processedMcpCalls.delete(dedupeKey);
+    const errorPayload = JSON.stringify({
+      serverName: serverUrl,
+      toolName: toolName,
+      args: args,
+      error: err.message
+    });
     const errorMessage = [
       `<BetterDeepSeek>`,
       `[BDS:AUTO] MCP call failed for ${toolName} @ ${serverUrl}`,
-      `Error: ${err.message}`,
+      `[BDS:AUTO_MCP_ERROR]`,
+      errorPayload,
+      `[/BDS:AUTO_MCP_ERROR]`,
       `</BetterDeepSeek>`
     ].join("\n");
     await injectPureTextAndSend(errorMessage, `MCP error ${toolName}`);
   }
+  };
+  return mcpQueue = mcpQueue.then(task, task);
 }
 
 export async function injectPureTextAndSend(autoMessage, logLabel = "Text prompt") {

@@ -85,6 +85,16 @@ const state = {
     pendingRun: null,
     runs: [],
   },
+  deepCode: {
+    enabled: false,
+    activeDirectory: null,
+    fileCount: 0,
+    manualPath: "",
+    files: [],
+    paths: [],
+    pendingReport: null,
+    recentDirectories: [],
+  },
   /** Per-conversation context budget tracking for Deep Research 128K guard */
   contextBudget: {
     /** @type {Map<string, {estimate: number, serverTokens: number, lastServerUpdate: number}>} conversationId -> budget */
@@ -96,6 +106,12 @@ const state = {
   mcpToolSchemas: [],
   /** Remote config object (deep-merged with built-in defaults). Populated by RemoteConfigManager. */
   remoteConfig: DEFAULT_REMOTE_CONFIG,
+};
+
+export const CHAT_OBSERVER_OPTIONS = {
+  subtree: true,
+  childList: true,
+  characterData: true,
 };
 
 /**
@@ -111,7 +127,7 @@ export function withObserverPaused(fn) {
     return fn();
   } finally {
     if (observer && document.body) {
-      observer.observe(document.body, { subtree: true, childList: true });
+      observer.observe(document.body, CHAT_OBSERVER_OPTIONS);
     }
   }
 }
