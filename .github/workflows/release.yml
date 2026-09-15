@@ -1,21 +1,55 @@
 name: Build and Release
 
 on:
+  workflow_dispatch:
   push:
-    branches:
-      - main
     tags:
-      - "v*"
+      - "v*.*.*"
+
+permissions:
+  contents: write
 
 jobs:
   release:
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
-
     steps:
-      - name: Checkout
+      - name: Checkout full history
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Determine release version
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            VERSION="${GITHUB_REF_NAME#v}"
+          else
+            LAST=$(git tag -l 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | head -n 1 || true)
+            if [[ -z "$LAST" ]]; then
+              VERSION="1.0.0"
+            else
+              CURRENT="${LAST#v}"
+              IFS=. read -r MAJOR MINOR PATCH <<< "$CURRENT"
+              VERSION="$MAJOR.$MINOR.$((PATCH + 1))"
+            fi
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git tag -a "v$VERSION" -m "Seekdeep v$VERSION"
+            git push origin "v$VERSION"
+          fi
+
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Invalid release version: $VERSION"
+            exit 1
+          fi
+
+          IFS=. read -r MAJOR MINOR PATCH <<< "$VERSION"
+          VERSION_CODE=$((MAJOR * 10000 + MINOR * 100 + PATCH))
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "version_code=$VERSION_CODE" >> "$GITHUB_OUTPUT"
+          echo "Release: v$VERSION (versionCode=$VERSION_CODE)"
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -41,113 +75,96 @@ jobs:
       - name: Write Android local.properties
         run: printf 'sdk.dir=%s\n' "$ANDROID_HOME" > android/local.properties
 
-      - name: Install dependencies
+      - name: Install web dependencies
         run: npm ci
 
-      - name: Build browser bundles
+      - name: Build web bundles
         run: npm run build
 
       - name: Build Android web bundle
         run: npm run build:android
 
-      - name: Ensure Gradle wrapper files exist
+      - name: Ensure Gradle wrapper
         working-directory: android
         run: |
           if [ ! -f gradle/wrapper/gradle-wrapper.jar ]; then
-            echo "Bootstrapping Gradle wrapper..."
             mkdir -p gradle/wrapper
-            curl -sSL "https://github.com/gradle/gradle/raw/v8.7.0/gradle/wrapper/gradle-wrapper.jar" \
-              -o gradle/wrapper/gradle-wrapper.jar
-            echo "distributionBase=GRADLE_USER_HOME" > gradle/wrapper/gradle-wrapper.properties
-            echo "distributionPath=wrapper/dists" >> gradle/wrapper/gradle-wrapper.properties
-            echo "distributionUrl=https\\://services.gradle.org/distributions/gradle-8.7-bin.zip" >> gradle/wrapper/gradle-wrapper.properties
-            echo "networkTimeout=10000" >> gradle/wrapper/gradle-wrapper.properties
-            echo "validateDistributionUrl=true" >> gradle/wrapper/gradle-wrapper.properties
-            echo "zipStoreBase=GRADLE_USER_HOME" >> gradle/wrapper/gradle-wrapper.properties
-            echo "zipStorePath=wrapper/dists" >> gradle/wrapper/gradle-wrapper.properties
+            curl -fsSL "https://github.com/gradle/gradle/raw/v8.7.0/gradle/wrapper/gradle-wrapper.jar" -o gradle/wrapper/gradle-wrapper.jar
+            cat > gradle/wrapper/gradle-wrapper.properties <<'EOF'
+          distributionBase=GRADLE_USER_HOME
+          distributionPath=wrapper/dists
+          distributionUrl=https\://services.gradle.org/distributions/gradle-8.7-bin.zip
+          networkTimeout=10000
+          validateDistributionUrl=true
+          zipStoreBase=GRADLE_USER_HOME
+          zipStorePath=wrapper/dists
+          EOF
           fi
+          chmod +x ./gradlew
 
-      - name: Make Gradle wrapper executable
-        working-directory: android
-        run: chmod +x ./gradlew
-
-      - name: Decode Keystore
+      - name: Validate signing configuration
         env:
           BDS_KEYSTORE: ${{ secrets.BDS_KEYSTORE }}
+          BDS_KEYSTORE_PASSWORD: ${{ secrets.BDS_KEYSTORE_PASSWORD }}
+          BDS_KEY_ALIAS: ${{ secrets.BDS_KEY_ALIAS }}
+          BDS_KEY_PASSWORD: ${{ secrets.BDS_KEY_PASSWORD }}
         run: |
-          if [ -n "$BDS_KEYSTORE" ]; then
-            echo "$BDS_KEYSTORE" | base64 --decode > android/ci-release.jks
-          else
-            echo "Warning: BDS_KEYSTORE secret is missing. Release build might fail or be unsigned."
-          fi
+          set -euo pipefail
+          [[ -n "$BDS_KEYSTORE" ]] || { echo "BDS_KEYSTORE secret is missing"; exit 1; }
+          [[ -n "$BDS_KEYSTORE_PASSWORD" ]] || { echo "BDS_KEYSTORE_PASSWORD secret is missing"; exit 1; }
+          [[ -n "$BDS_KEY_ALIAS" ]] || { echo "BDS_KEY_ALIAS secret is missing"; exit 1; }
+          [[ -n "$BDS_KEY_PASSWORD" ]] || { echo "BDS_KEY_PASSWORD secret is missing"; exit 1; }
+          printf '%s' "$BDS_KEYSTORE" | base64 --decode > android/ci-release.jks
+          test -s android/ci-release.jks
 
-      - name: Build Android APK
+      - name: Build signed ARM release APKs
         working-directory: android
-        run: ./gradlew --no-daemon assembleRelease
+        run: ./gradlew --no-daemon clean assembleRelease -PversionName="${{ steps.version.outputs.version }}" -PversionCode="${{ steps.version.outputs.version_code }}"
         env:
           BDS_KEYSTORE_PASSWORD: ${{ secrets.BDS_KEYSTORE_PASSWORD }}
           BDS_KEY_ALIAS: ${{ secrets.BDS_KEY_ALIAS }}
           BDS_KEY_PASSWORD: ${{ secrets.BDS_KEY_PASSWORD }}
 
-      - name: Verify APK Signature
+      - name: Rename and verify APKs
+        id: apk
+        shell: bash
         run: |
-          APK_PATH=$(find android/app/build/outputs/apk/release -name "*.apk" | head -n 1)
-          if [ -n "$APK_PATH" ]; then
-            $ANDROID_HOME/build-tools/34.0.0/apksigner verify --verbose "$APK_PATH"
-          else
-            echo "No release APK found to verify."
-            exit 1
-          fi
+          set -euo pipefail
+          OUT="android/app/build/outputs/apk/release"
+          UNIVERSAL=$(find "$OUT" -type f -name '*universal*release.apk' | head -n 1)
+          ARM64=$(find "$OUT" -type f -name '*arm64-v8a*release.apk' | head -n 1)
+          ARMV7=$(find "$OUT" -type f -name '*armeabi-v7a*release.apk' | head -n 1)
+          [[ -n "$UNIVERSAL" && -n "$ARM64" && -n "$ARMV7" ]] || { find "$OUT" -type f -name '*.apk' -print; exit 1; }
 
-      - name: Compute version and prepare artifact names
-        id: prep
-        run: |
-          VERSION=$(node -p "require('./package.json').version")
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          VERSION="${{ steps.version.outputs.version }}"
+          cp "$UNIVERSAL" "Seekdeep-universal-v$VERSION.apk"
+          cp "$ARM64" "Seekdeep-arm64-v8a-v$VERSION.apk"
+          cp "$ARMV7" "Seekdeep-armeabi-v7a-v$VERSION.apk"
 
-          APK_SRC=$(find android/app/build/outputs/apk/release -name "*.apk" | head -n 1)
+          for apk in Seekdeep-universal-v$VERSION.apk Seekdeep-arm64-v8a-v$VERSION.apk Seekdeep-armeabi-v7a-v$VERSION.apk; do
+            "$ANDROID_HOME/build-tools/34.0.0/apksigner" verify --verbose "$apk"
+          done
 
-          if [ "${{ github.ref }}" = "refs/heads/main" ]; then
-            mv better-deepseek-chrome.zip   better-deepseek-chrome-latest.zip
-            mv better-deepseek-firefox.zip  better-deepseek-firefox-latest.zip
-            cp "$APK_SRC" better-deepseek-android-latest-signed.apk
-            echo "is_tag=false" >> "$GITHUB_OUTPUT"
-          else
-            mv better-deepseek-chrome.zip   "better-deepseek-chrome-v${VERSION}.zip"
-            mv better-deepseek-firefox.zip  "better-deepseek-firefox-v${VERSION}.zip"
-            cp "$APK_SRC" "better-deepseek-android-v${VERSION}-signed.apk"
-            echo "is_tag=true" >> "$GITHUB_OUTPUT"
-          fi
+          CERT1=$("$ANDROID_HOME/build-tools/34.0.0/apksigner" verify --print-certs "Seekdeep-universal-v$VERSION.apk" | grep 'Signer #1 certificate SHA-256 digest' | head -n1)
+          CERT2=$("$ANDROID_HOME/build-tools/34.0.0/apksigner" verify --print-certs "Seekdeep-arm64-v8a-v$VERSION.apk" | grep 'Signer #1 certificate SHA-256 digest' | head -n1)
+          CERT3=$("$ANDROID_HOME/build-tools/34.0.0/apksigner" verify --print-certs "Seekdeep-armeabi-v7a-v$VERSION.apk" | grep 'Signer #1 certificate SHA-256 digest' | head -n1)
+          [[ "$CERT1" == "$CERT2" && "$CERT1" == "$CERT3" ]] || { echo "APK certificates differ"; exit 1; }
+          echo "All APKs are signed by the same release certificate."
 
-      - name: Update Latest Release
-        if: github.ref == 'refs/heads/main'
+          echo "universal=Seekdeep-universal-v$VERSION.apk" >> "$GITHUB_OUTPUT"
+          echo "arm64=Seekdeep-arm64-v8a-v$VERSION.apk" >> "$GITHUB_OUTPUT"
+          echo "armv7=Seekdeep-armeabi-v7a-v$VERSION.apk" >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: latest
-          name: Latest Build
-          body: |
-            This release contains the latest automated build from the `main` branch.
-
-            The Android APK is now **digitally signed**. You can install it directly without Play Protect warnings (though you may still need to allow "Unknown Sources" in your browser).
-          files: |
-            better-deepseek-chrome-latest.zip
-            better-deepseek-firefox-latest.zip
-            better-deepseek-android-latest-signed.apk
-          prerelease: true
-          make_latest: true
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Create Versioned Release
-        if: startsWith(github.ref, 'refs/tags/v')
-        uses: softprops/action-gh-release@v2
-        with:
-          body: |
-            This release includes browser extension bundles and a **signed** Android APK.
-          files: |
-            better-deepseek-chrome-v${{ steps.prep.outputs.version }}.zip
-            better-deepseek-firefox-v${{ steps.prep.outputs.version }}.zip
-            better-deepseek-android-v${{ steps.prep.outputs.version }}-signed.apk
+          tag_name: v${{ steps.version.outputs.version }}
+          name: Seekdeep v${{ steps.version.outputs.version }}
           generate_release_notes: true
+          make_latest: true
+          files: |
+            ${{ steps.apk.outputs.universal }}
+            ${{ steps.apk.outputs.arm64 }}
+            ${{ steps.apk.outputs.armv7 }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
