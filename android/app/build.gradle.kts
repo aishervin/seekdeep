@@ -40,7 +40,11 @@ android {
             }
         }
         release {
-            signingConfig = signingConfigs.getByName("release")
+            val signingReady = rootProject.file("ci-release.jks").isFile &&
+                !System.getenv("BDS_KEYSTORE_PASSWORD").isNullOrBlank() &&
+                !System.getenv("BDS_KEY_ALIAS").isNullOrBlank() &&
+                !System.getenv("BDS_KEY_PASSWORD").isNullOrBlank()
+            signingConfig = if (signingReady) signingConfigs.getByName("release") else null
             isMinifyEnabled = false
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
         }
