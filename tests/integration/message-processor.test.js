@@ -11,6 +11,8 @@ const mocks = vi.hoisted(() => ({
   scheduleScan: vi.fn(),
   scheduleMessageScan: vi.fn(),
   collectMessageNodes: vi.fn(() => []),
+  findLatestAssistantMessageNode: vi.fn(() => null),
+  findChatEditor: vi.fn(() => null),
   extractMessageRawText: vi.fn((node) => node.dataset.rawText || ""),
   injectPythonRunButtons: vi.fn(),
   injectJavaScriptRunButtons: vi.fn(),
@@ -46,6 +48,7 @@ vi.mock("../../src/content/scanner.js", () => ({
   scheduleScan: mocks.scheduleScan,
   scheduleMessageScan: mocks.scheduleMessageScan,
   collectMessageNodes: mocks.collectMessageNodes,
+  findLatestAssistantMessageNode: mocks.findLatestAssistantMessageNode,
 }));
 vi.mock("../../src/content/dom/message-text.js", async () => {
   const actual = await vi.importActual("../../src/content/dom/message-text.js");
@@ -82,6 +85,7 @@ vi.mock("../../src/content/auto.js", () => ({
   clearRunSearchHistory: mocks.clearRunSearchHistory,
   injectPureTextAndSend: mocks.injectPureTextAndSend,
   sendFileWithMessage: mocks.sendFileWithMessage,
+  findChatEditor: mocks.findChatEditor,
 }));
 vi.mock("svelte", async () => {
   const actual = await vi.importActual("svelte");
@@ -92,6 +96,8 @@ import {
   disposeMessageNode,
   processMessageNode,
   resetMessagePricing,
+  resetGeneratingTracker,
+  isSystemGenerating,
 } from "../../src/content/message-processor.svelte.js";
 
 function createMessageNode(rawText, role = "assistant") {
@@ -115,6 +121,7 @@ describe("message processor integration", () => {
   beforeEach(() => {
     resetAppState();
     resetMessagePricing();
+    resetGeneratingTracker();
     Object.values(mocks).forEach((mock) => {
       if (typeof mock?.mockReset === "function") mock.mockReset();
     });
@@ -173,15 +180,15 @@ describe("message processor integration", () => {
       systemGenerating: false,
     };
     processMessageNode(node, 0, nodes, context);
-    const wrapper = node.nextElementSibling;
+    const wrapper = node.querySelector(".bds-host-wrapper");
 
     const newParent = document.createElement("section");
     document.body.appendChild(newParent);
     newParent.appendChild(node);
     processMessageNode(node, 0, nodes, context);
 
-    expect(node.nextElementSibling).toBe(wrapper);
-    expect(wrapper.parentElement).toBe(newParent);
+    expect(node.contains(wrapper)).toBe(true);
+    expect(wrapper.parentElement).toBe(node);
     expect(document.querySelectorAll(".bds-host-wrapper")).toHaveLength(1);
   });
 
@@ -224,7 +231,7 @@ describe("message processor integration", () => {
     staleOverlay.textContent = "stale duplicate";
     host.appendChild(staleOverlay);
     wrapper.appendChild(host);
-    node.insertAdjacentElement("afterend", wrapper);
+    node.appendChild(wrapper);
 
     processMessageNode(node);
 
@@ -456,6 +463,129 @@ describe("message processor integration", () => {
     window.removeEventListener("bds:deep-research-step-done", listener);
   });
 
+  describe("isSystemGenerating", () => {
+    function createTextarea(value) {
+      const editor = document.createElement("textarea");
+      editor.value = value || "";
+      document.body.appendChild(editor);
+      return editor;
+    }
+
+    function createAssistantMessage({ withButtons = false, withCursor = false } = {}) {
+      const node = document.createElement("div");
+      node.className = "ds-message";
+      if (withCursor) {
+        const cursor = document.createElement("div");
+        cursor.className = "ds-cursor";
+        node.appendChild(cursor);
+      }
+      if (withButtons) {
+        const button = document.createElement("div");
+        button.setAttribute("role", "button");
+        const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+        button.appendChild(svg);
+        node.appendChild(button);
+      }
+      document.body.appendChild(node);
+      return node;
+    }
+
+    function seeStopButton() {
+      const stopButton = document.createElement("div");
+      stopButton.className = "ds-icon-stop";
+      document.body.appendChild(stopButton);
+      expect(isSystemGenerating()).toBe(true);
+      stopButton.remove();
+    }
+
+    it("returns true when the stop button is visible", () => {
+      const stopButton = document.createElement("div");
+      stopButton.className = "ds-icon-stop";
+      document.body.appendChild(stopButton);
+
+      expect(isSystemGenerating()).toBe(true);
+    });
+
+    it("returns true while the composer has text and the latest assistant message keeps growing", () => {
+      seeStopButton();
+      mocks.findChatEditor.mockReturnValue(createTextarea("draft while generating"));
+      const message = createAssistantMessage();
+      mocks.findLatestAssistantMessageNode.mockReturnValue(message);
+
+      expect(isSystemGenerating()).toBe(false);
+
+      message.textContent = "streaming tokens...";
+      expect(isSystemGenerating()).toBe(true);
+    });
+
+    it("returns true when the composer has text and the latest assistant message has a streaming cursor", () => {
+      seeStopButton();
+      mocks.findChatEditor.mockReturnValue(createTextarea("hello"));
+      mocks.findLatestAssistantMessageNode.mockReturnValue(createAssistantMessage({ withCursor: true, withButtons: true }));
+
+      expect(isSystemGenerating()).toBe(true);
+    });
+
+    it("returns false when the composer has text and the latest assistant message has action buttons", () => {
+      seeStopButton();
+      mocks.findChatEditor.mockReturnValue(createTextarea("hello while idle"));
+      mocks.findLatestAssistantMessageNode.mockReturnValue(createAssistantMessage({ withButtons: true }));
+
+      expect(isSystemGenerating()).toBe(false);
+    });
+
+    it("returns false when the composer is empty and no stop button is visible", () => {
+      mocks.findChatEditor.mockReturnValue(createTextarea(""));
+
+      expect(isSystemGenerating()).toBe(false);
+    });
+
+    it("returns false when there is no composer and no stop button", () => {
+      mocks.findChatEditor.mockReturnValue(null);
+
+      expect(isSystemGenerating()).toBe(false);
+    });
+
+    it("returns false on the first evaluation of a buttonless message (conservative init)", () => {
+      seeStopButton();
+      mocks.findChatEditor.mockReturnValue(createTextarea("draft"));
+      mocks.findLatestAssistantMessageNode.mockReturnValue(createAssistantMessage());
+
+      expect(isSystemGenerating()).toBe(false);
+    });
+
+    it("returns false when the latest assistant message stopped growing past the idle window", () => {
+      seeStopButton();
+      mocks.findChatEditor.mockReturnValue(createTextarea("draft"));
+      const message = createAssistantMessage();
+      mocks.findLatestAssistantMessageNode.mockReturnValue(message);
+
+      expect(isSystemGenerating()).toBe(false);
+      message.textContent = "final token";
+      expect(isSystemGenerating()).toBe(true);
+
+      vi.advanceTimersByTime(6000);
+      expect(isSystemGenerating()).toBe(false);
+    });
+
+    it("returns false when the grace period after the last observed generation has expired", () => {
+      seeStopButton();
+      vi.advanceTimersByTime(31000);
+      mocks.findChatEditor.mockReturnValue(createTextarea("draft"));
+      mocks.findLatestAssistantMessageNode.mockReturnValue(createAssistantMessage());
+
+      expect(isSystemGenerating()).toBe(false);
+    });
+
+    it("returns false when there is no latest assistant message", () => {
+      seeStopButton();
+      mocks.findChatEditor.mockReturnValue(createTextarea("draft"));
+      mocks.findLatestAssistantMessageNode.mockReturnValue(null);
+
+      expect(isSystemGenerating()).toBe(false);
+    });
+  });
+
   it("dispatches clarifying questions and stores them on state", () => {
     const node = createMessageNode(
       '<BDS:ask_question>[{"id":"q1","question":"Pick one","type":"test","options":["A"]}]</BDS:ask_question>',
@@ -507,6 +637,55 @@ describe("message processor integration", () => {
 
     expect(node.querySelector(".ds-markdown").textContent).toContain("Visible text");
     expect(node.querySelector(".ds-markdown").textContent).not.toContain("Hidden");
+  });
+
+  it("removes BetterDeepSeek tags from nested collapsible-text DOM without leaking HTML tags into text", () => {
+    const node = document.createElement("div");
+    node.className = "ds-message";
+    node.dataset.role = "user";
+    node.dataset.rawText = "<BetterDeepSeek>System Instructions</BetterDeepSeek>create a visualizer for me";
+
+    const collapsible = document.createElement("div");
+    collapsible.className = "ds-collapsible-text";
+    const innerDiv = document.createElement("div");
+    const span = document.createElement("span");
+    span.textContent = "<BetterDeepSeek>System Instructions</BetterDeepSeek>create a visualizer for me";
+    innerDiv.appendChild(span);
+    collapsible.appendChild(innerDiv);
+    node.appendChild(collapsible);
+    document.body.appendChild(node);
+
+    processMessageNode(node);
+
+    expect(span.textContent).toBe("create a visualizer for me");
+    expect(span.textContent).not.toContain("<div");
+    expect(span.textContent).not.toContain("<span");
+    expect(span.textContent).not.toContain("BetterDeepSeek");
+    expect(span.textContent).not.toContain("System Instructions");
+  });
+
+  it("preserves separate paragraph structure when stripping BDS tags from multi-node user messages", () => {
+    const node = document.createElement("div");
+    node.className = "ds-message";
+    node.dataset.role = "user";
+    node.dataset.rawText = "<BetterDeepSeek>System Instructions</BetterDeepSeek>Paragraph 1\nParagraph 2";
+
+    const container = document.createElement("div");
+    container.className = "ds-markdown";
+    const p1 = document.createElement("p");
+    p1.textContent = "<BetterDeepSeek>System Instructions</BetterDeepSeek>Paragraph 1";
+    const p2 = document.createElement("p");
+    p2.textContent = "Paragraph 2";
+    container.appendChild(p1);
+    container.appendChild(p2);
+    node.appendChild(container);
+    document.body.appendChild(node);
+
+    processMessageNode(node);
+
+    expect(p1.textContent).toBe("Paragraph 1");
+    expect(p2.textContent).toBe("Paragraph 2");
+    expect(container.querySelectorAll("p")).toHaveLength(2);
   });
 
   it("speaks the latest settled assistant response once in voice mode", () => {
@@ -673,5 +852,80 @@ describe("bookmark button injection", () => {
     await Promise.resolve();
     await Promise.resolve();
     expect(btn.classList.contains("bds-bookmark-btn--active")).toBe(false);
+  });
+
+  it("renders a directory list result card for user messages", () => {
+    const payload = JSON.stringify({
+      path: "src",
+      success: true,
+      isDirectory: true,
+      childCount: 2,
+      entries: [
+        { name: "utils/", type: "dir" },
+        { name: "main.js", type: "file" },
+      ],
+      listing: "- DIR  utils/\n- FILE main.js\n",
+    });
+    const rawText =
+      `<BetterDeepSeek>\n[BDS:AUTO_DIR_LIST_RESULT]\n${payload}\n[/BDS:AUTO_DIR_LIST_RESULT]\n` +
+      '[BDS:AUTO] Directory listing for path: "src"\n</BetterDeepSeek>';
+    const node = createMessageNode(rawText, "user");
+
+    processMessageNode(node);
+
+    expect(mocks.mount).toHaveBeenCalledOnce();
+    const props = mocks.mount.mock.calls[0][1].props;
+    expect(props.blocks).toHaveLength(1);
+    expect(props.blocks[0].name).toBe("auto_dir_list_result");
+    expect(props.blocks[0].attrs.path).toBe("src");
+    expect(props.blocks[0].attrs.childCount).toBe("2");
+    expect(JSON.parse(props.blocks[0].content)).toEqual([
+      { name: "utils/", type: "dir" },
+      { name: "main.js", type: "file" },
+    ]);
+  });
+
+  it("renders a directory list result card with error for failed listings", () => {
+    const payload = JSON.stringify({
+      path: "missing",
+      success: false,
+      childCount: 0,
+      entries: [],
+      error: 'Directory "missing" was not found in the active codebase.',
+    });
+    const rawText =
+      `<BetterDeepSeek>\n[BDS:AUTO_DIR_LIST_RESULT]\n${payload}\n[/BDS:AUTO_DIR_LIST_RESULT]\n` +
+      '[BDS:AUTO] Directory listing requested for "missing", but it was not found in the active codebase.\n</BetterDeepSeek>';
+    const node = createMessageNode(rawText, "user");
+
+    processMessageNode(node);
+
+    expect(mocks.mount).toHaveBeenCalledOnce();
+    const props = mocks.mount.mock.calls[0][1].props;
+    expect(props.blocks[0].name).toBe("auto_dir_list_result");
+    expect(props.blocks[0].attrs.path).toBe("missing");
+    expect(props.blocks[0].attrs.childCount).toBe("0");
+    expect(props.blocks[0].attrs.error).toBe('Directory "missing" was not found in the active codebase.');
+    expect(JSON.parse(props.blocks[0].content)).toEqual([]);
+  });
+
+  it("does not duplicate the directory list card on re-process", () => {
+    const payload = JSON.stringify({
+      path: "src",
+      success: true,
+      childCount: 1,
+      entries: [{ name: "main.js", type: "file" }],
+      listing: "- FILE main.js\n",
+    });
+    const rawText =
+      `<BetterDeepSeek>\n[BDS:AUTO_DIR_LIST_RESULT]\n${payload}\n[/BDS:AUTO_DIR_LIST_RESULT]\n` +
+      '[BDS:AUTO] Directory listing for path: "src"\n</BetterDeepSeek>';
+    const node = createMessageNode(rawText, "user");
+
+    processMessageNode(node);
+    processMessageNode(node);
+
+    expect(mocks.mount).toHaveBeenCalledOnce();
+    expect(document.querySelectorAll(".mock-overlay")).toHaveLength(1);
   });
 });

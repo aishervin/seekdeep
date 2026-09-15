@@ -322,7 +322,7 @@ test("creates standalone download cards for create_file outputs", async ({ page 
   await expect(page.locator(".bds-download-card")).toContainText("notes.txt");
 
   const download = page.waitForEvent("download");
-  await page.locator(".bds-download-card .bds-btn").click();
+  await page.locator(".bds-download-card").getByRole("button", { name: "Download" }).click();
   await expect(await download).toBeTruthy();
 });
 
@@ -806,11 +806,11 @@ test("host wrapper: create_file download card in block-level nonzero wrapper", a
   const card = page.locator(".bds-download-card").first();
   const hostContract = await card.evaluate((element) => {
     const wrapper = element.closest(".bds-host-wrapper");
-    const message = wrapper?.previousElementSibling;
+    const message = wrapper?.closest(".ds-message");
     const rect = wrapper?.getBoundingClientRect();
     return {
       hasWrapper: Boolean(wrapper),
-      adjacentToMessage: Boolean(message?.classList.contains("ds-message")),
+      insideMessage: Boolean(message?.classList.contains("ds-message")),
       ownsExpectedMessage: Boolean(message?.textContent.includes("Hello Chrome E2E")),
       display: wrapper ? getComputedStyle(wrapper).display : null,
       w: rect?.width || 0,
@@ -818,7 +818,7 @@ test("host wrapper: create_file download card in block-level nonzero wrapper", a
     };
   });
   expect(hostContract.hasWrapper).toBe(true);
-  expect(hostContract.adjacentToMessage).toBe(true);
+  expect(hostContract.insideMessage).toBe(true);
   expect(hostContract.ownsExpectedMessage).toBe(true);
   expect(hostContract.display).not.toBe("contents");
   expect(hostContract.w).toBeGreaterThan(0);

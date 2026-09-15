@@ -2,6 +2,7 @@
   import Drawer from "./Drawer.svelte";
   import ToastStack from "./ToastStack.svelte";
   import QuestionPanel from "./QuestionPanel.svelte";
+  import QueuePanel from "./QueuePanel.svelte";
   import DeepResearchRevisionPanel from "./DeepResearchRevisionPanel.svelte";
   import WhatsNewModal from "./WhatsNewModal.svelte";
   import SelectionOverlay from "./SelectionOverlay.svelte";
@@ -9,11 +10,13 @@
   import AnnouncementBanner from "./AnnouncementBanner.svelte";
   import PreviewPanel from "./PreviewPanel.svelte";
   import ConfirmDialog from "./ConfirmDialog.svelte";
+  import DeepCodeModal from "./DeepCodeModal.svelte";
   import ApiPlayground from "../api-playground/ApiPlayground.svelte";
   import appState from "../state.js";
 
   let drawerOpen = $state(false);
   let apiPlaygroundOpen = $state(false);
+  let deepCodeModalOpen = $state(false);
   let whatsNewPending = $state(appState.whatsNewPending);
 
   let previewVisible = $state(false);
@@ -47,13 +50,13 @@
 
   // ── Public API (called from non-Svelte code via mount.js) ──
 
-  export function showToast(message) {
+  export function showToast(message, duration = 2880) {
     const id = ++toastId;
     toasts = [...toasts, { id, message }];
 
     setTimeout(() => {
       toasts = toasts.filter((t) => t.id !== id);
-    }, 2880);
+    }, duration);
   }
 
   export function showLongWorkOverlay(_visible) {}
@@ -129,6 +132,10 @@
     appState.selectionMode = true;
     closeDrawer();
   });
+
+  window.addEventListener("bds:open-deep-code-modal", () => {
+    deepCodeModalOpen = true;
+  });
 </script>
 
 <button id="bds-toggle" type="button" onclick={toggleDrawer} aria-label="Better DeepSeek">
@@ -142,8 +149,16 @@
   <ApiPlayground onclose={closeApiPlayground} />
 {/if}
 
+<DeepCodeModal
+  show={deepCodeModalOpen}
+  activeDirectory={appState.deepCode.activeDirectory}
+  fileCount={appState.deepCode.fileCount}
+  onclose={() => deepCodeModalOpen = false}
+/>
+
 <ToastStack {toasts} />
 <QuestionPanel />
+<QueuePanel />
 <DeepResearchRevisionPanel />
 
 {#if whatsNewPending}

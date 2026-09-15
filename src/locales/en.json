@@ -1,5 +1,5 @@
 {
-  "updatedAt": "2026-05-19T00:00:00Z",
+  "updatedAt": "2026-08-15T00:00:00Z",
   "messages": {
     "common": {
       "save": "Save",
@@ -43,6 +43,7 @@
       "importParseError": "Invalid file format.",
       "importDone": "Data imported successfully.",
       "importFailed": "Failed to import data.",
+      "importContextError": "Extension was updated. Please reload the page and try again.",
       "importPasswordPlaceholder": "Enter the export password",
       "sectionSettings": "Settings",
       "sectionPrompts": "Custom System Prompts",
@@ -52,7 +53,9 @@
       "sectionProjects": "Projects",
       "sectionProjectFiles": "Project Files",
       "sectionChatTags": "Chat Tags",
-      "sectionSavedItems": "Saved Items"
+      "sectionSavedItems": "Saved Items",
+      "sectionCssSnippets": "CSS Snippets",
+      "sectionMcpServers": "MCP Servers"
     },
     "settings": {
       "generalSettings": "General Settings",
@@ -126,6 +129,15 @@
       "contextGuardLimitHint": "DeepSeek web-chat context window size. Default 128,000 tokens.",
       "contextGuardStopPercent": "Stop Threshold (%)",
       "contextGuardStopPercentHint": "Stop Deep Research when estimated context reaches {{threshold}} tokens. Clamped to 50-95%.",
+      "searchProviders": "Search Providers",
+      "searchProvidersHint": "Choose and order the engines used by automatic web search. The first engine that returns strong results wins.",
+      "providerMoveUp": "Move provider up",
+      "providerMoveDown": "Move provider down",
+      "searchProvider": {
+        "ddgLite": "DuckDuckGo (Lite)",
+        "ddgHtml": "DuckDuckGo (HTML)",
+        "bing": "Bing"
+      },
       "collapseLongUserMessages": "Collapse long user messages",
       "collapseLongUserMessagesHint": "Automatically hide very long user messages behind a read-more toggle.",
       "loadAllHistoryOnSession": "Load all history when opening a session",
@@ -353,6 +365,7 @@
       "folderNoTextFiles": "No supported text files were found in the selected folder.",
       "pickTimeout": "The file picker did not return a result. Please try again.",
       "imagesRequireVision": "Images can only be attached in Vision mode.",
+      "expertModeWarning": "Due to DeepSeek platform limitations, these tools may not work properly in Expert mode.",
       "buttonTitle": "Advanced Upload",
       "attachProject": "Attach Project",
       "voicePrompt": "Voice Prompt",
@@ -435,9 +448,33 @@
       "showOutput": "Show Output ▾"
     },
     "searchResult": {
-      "searching": "Searching DuckDuckGo...",
       "resultsFor": "Search Results: {{query}}",
-      "resultCount": "{{count}} results found"
+      "resultCount": "{{count}} results found",
+      "via": "via {{provider}}",
+      "lowConfidence": "Low-confidence results — verify before citing"
+    },
+    "fileReadResult": {
+      "success": "File Read Successfully",
+      "error": "File Read Failed",
+      "linesRead": "{{count}} lines read",
+      "showContent": "Show File Content",
+      "hideContent": "Hide File Content",
+      "copyCode": "Copy",
+      "copied": "Copied!"
+    },
+    "directorySearchResult": {
+      "resultsFor": "Codebase Search: \"{{query}}\"",
+      "matchCount": "{{count}} code matches found",
+      "noMatches": "No matching code found.",
+      "copySnippet": "Copy",
+      "copied": "Copied!"
+    },
+    "directoryListResult": {
+      "title": "Directory: {{path}}",
+      "entryCount": "{{count}} items",
+      "folder": "Folder",
+      "file": "File",
+      "empty": "This directory is empty."
     },
     "autoCodeRunner": {
       "aiWantsToRun": "AI wants to run {{lang}} code",
@@ -469,8 +506,116 @@
       "copied": "Copied!",
       "download": "Download"
     },
+    "harnessTaskCard": {
+      "title": "DeepSeek Harness Task",
+      "pluginTag": "Bridge Plugin v{{version}} (Auto SSE)",
+      "statusReady": "Ready",
+      "statusConnecting": "Connecting...",
+      "statusRunning": "Running...",
+      "statusFinishing": "Compiling...",
+      "statusCompleted": "Completed",
+      "statusFallback": "Manual Mode",
+      "statusCancelled": "Cancelled",
+      "statusError": "Failed",
+      "cwdLabel": "Absolute Codebase Path (CWD):",
+      "cwdPlaceholder": "e.g. A:/Users/Edige/GitHub/asistan",
+      "taskLabel": "Task Description & Plan:",
+      "taskDefault": "Execute task",
+      "fallbackTitle": "Harness Manual Execution (Bridge Plugin Not Installed)",
+      "fallbackDesc": "Task text copied to clipboard! Paste it into the Harness tab and press Enter.",
+      "copyPrompt": "Copy Again",
+      "openHarness": "Open Harness",
+      "fallbackHint": "For fully automatic mode, install the Bridge plugin in the terminal:",
+      "pluginRepoButton": "Bridge Plugin Repo (GitHub)",
+      "liveHeader": "Live Execution Stream ({{count}} events)",
+      "liveAssistantLabel": "Live Assistant Output:",
+      "logSessionCreated": "Session {{sid}} created on Harness.",
+      "logToolCall": "[{{time}}] Running tool: {{tool}}",
+      "logToolResult": "[{{time}}] Finished tool: {{tool}}",
+      "logCompiling": "[{{time}}] Results compiling...",
+      "logComplete": "[{{time}}] Turn completed. Report queued for next AI prompt.",
+      "logCancelled": "Task cancelled by user.",
+      "reportTitle": "Final Task Report",
+      "reportCopy": "Copy",
+      "reportInsert": "Insert into Chat",
+      "autoInjectNotice": "This final report will be automatically added to your next message inside a <code>&lt;BetterDeepSeek&gt;</code> block.",
+      "copyFeedback": "Report copied to clipboard!",
+      "copyPromptFeedback": "Prompt copied to clipboard!",
+      "copyFailed": "Failed to copy.",
+      "insertFeedback": "Inserted into chat!",
+      "insertFallback": "Copied to clipboard (chat input not found)",
+      "debugToggleShow": "Show Detailed Error Log",
+      "debugToggleHide": "Hide Debug Details",
+      "debugUrl": "URL:",
+      "debugError": "Error:",
+      "cancelBtn": "Stop / Cancel",
+      "runExecuting": "Executing on Harness...",
+      "runAgain": "Run Again",
+      "runFallback": "Run Again",
+      "runDefault": "Run in DeepSeek Harness",
+      "executeFailed": "Failed to execute session on Harness."
+    },
+    "deepCodeModal": {
+      "title": "DeepCode & Harness",
+      "subtitle": "Link a local codebase to empower DeepSeek with file inspection, code search, and automated Harness task execution.",
+      "activeCodebase": "Active Codebase",
+      "filesIndexed": "{{count}} files indexed",
+      "linkFolder": "Link Local Folder...",
+      "addNewDirectory": "Add New Directory",
+      "pickFolder": "Select Folder",
+      "indexing": "Indexing Files...",
+      "manualPathLabel": "Absolute System Path (for Harness CWD):",
+      "manualPathPlaceholder": "e.g. A:/Users/Edige/GitHub/asistan",
+      "manualPathHint": "Due to web browser security rules, you need to enter the path again.",
+      "savePath": "Save Path",
+      "pathSaved": "Absolute path saved. It will be used as the Harness CWD.",
+      "pathMismatch": "The entered path does not match the selected folder \"{{name}}\". Check the last folder name.",
+      "recentTitle": "Recent Codebases",
+      "emptyRecent": "No recent directories. Click above to link a local folder.",
+      "removeHistory": "Remove from history",
+      "done": "Done",
+      "closeAria": "Close",
+      "linkedFeedback": "Linked \"{{name}}\" ({{count}} files indexed)",
+      "selectFailed": "Failed to select directory.",
+      "fsApiUnsupported": "File System Access API is not supported on this browser context.",
+      "switchedFeedback": "Switched to \"{{name}}\"",
+      "recentNeedsPicker": "\"{{name}}\" has no linked file access. Select it with the folder picker to enable file reads.",
+      "cancel": "Cancel"
+    },
+    "deepCodeOnboarding": {
+      "title": "Welcome to DeepCode",
+      "harnessIntro": "DeepCode works together with the official <strong>DeepSeek Harness</strong>. You need to have <strong>DeepSeek Harness</strong> installed on your device for this feature to work.",
+      "harnessLink": "Download DeepSeek Harness on GitHub",
+      "pluginLink": "Get the Better DeepSeek Bridge plugin (GitHub)",
+      "pluginInfo": "To connect Better DeepSeek to DeepSeek Harness, a <strong>plugin</strong> is required. If the plugin is installed, everything happens fully automatically. If it is not installed, you will need to perform manual steps.",
+      "gotIt": "Got it",
+      "closeAria": "Close"
+    },
+    "deepCodeToggle": {
+      "label": "DeepCode",
+      "labelActive": "DeepCode: Active",
+      "labelWithDir": "DeepCode: {{dir}}",
+      "ariaLabel": "DeepCode: Local Codebase & Harness",
+      "titleActive": "DeepCode Active: {{path}}",
+      "titleDefault": "DeepCode: Local Codebase & Harness Workspace",
+      "panelTitle": "DeepCode",
+      "closeAria": "Close",
+      "integrationTitle": "Codebase & Harness Integration",
+      "integrationDesc": "Inject codebase context & enable DeepSeek Harness local tasks.",
+      "enableToggle": "Enable DeepCode",
+      "disableToggle": "Disable DeepCode",
+      "recentTitle": "Recent Codebases",
+      "removeHistory": "Remove from history",
+      "emptyRecents": "No recent codebases yet. Link a local folder to start.",
+      "statusEnhanced": "Harness Bridge Connected (Auto SSE)",
+      "statusFallback": "Harness Fallback Mode"
+    },
     "downloadCard": {
-      "download": "Download"
+      "download": "Download",
+      "viewFiles": "View files",
+      "hideFiles": "Hide files",
+      "showCode": "Show code",
+      "hideCode": "Hide code"
     },
     "pptxCard": {
       "title": "PowerPoint Presentation",
@@ -537,6 +682,20 @@
       "sendFailed": "Failed to send. Please try again.",
       "cancel": "Cancel"
     },
+    "chartCard": {
+      "defaultTitle": "Interactive Chart",
+      "defaultSubtitle": "Vega-Lite Visualization",
+      "downloadPng": "Download as PNG",
+      "downloadSvg": "Download as SVG",
+      "downloadJson": "Download Spec (JSON)",
+      "viewCode": "View Spec",
+      "hideCode": "Hide Spec",
+      "copySpec": "Copy Spec",
+      "copied": "Copied!",
+      "renderError": "Could not render chart",
+      "expand": "Expand chart",
+      "collapse": "Collapse chart"
+    },
     "previewPanel": {
       "close": "Close",
       "download": "Download .html"
@@ -567,7 +726,31 @@
     },
     "mcp": {
       "detailShow": "▸ Show Details",
-      "detailHide": "▾ Hide Details"
+      "detailHide": "▾ Hide Details",
+      "inlineMaxChars": "Inline Content Max Chars",
+      "inlineMaxCharsHint": "Max characters for MCP tool list and tool results sent inline. If the tool list exceeds this, extra tools are omitted with a count warning. If a result is rejected, shorter fallbacks and pure text are tried.",
+      "transportNote": "Note: Only HTTP/Streamable HTTP transport is supported.",
+      "sectionTitle": "MCP Servers",
+      "description": "Add remote MCP (Model Context Protocol) servers. The AI can discover and invoke tools from these servers.",
+      "test": "Test",
+      "testLoading": "...",
+      "edit": "Edit",
+      "addServer": "Add MCP Server",
+      "addModalTitle": "Add MCP Server",
+      "editModalTitle": "Edit MCP Server",
+      "nameLabel": "Name",
+      "namePlaceholder": "My MCP Server",
+      "serverUrlLabel": "Server URL",
+      "serverUrlPlaceholder": "https://example.com/mcp",
+      "apiKeyLabel": "API Key (optional)",
+      "apiKeyPlaceholder": "sk-...",
+      "enabledLabel": "Enabled",
+      "cancel": "Cancel",
+      "save": "Save",
+      "deleteConfirm": "Delete MCP server \"{{name}}\"?",
+      "testFailed": "MCP test failed: {{message}}",
+      "toolsCount": "{{count}} tools",
+      "connected": "Connected: {{count}} tools found"
     },
     "expandToggle": {
       "expand": "Expand",
@@ -586,8 +769,12 @@
       "skillActive": "Active skill: <strong>{{name}}</strong>",
       "webFetchRequested": "Web page is being fetched",
       "githubFetchRequested": "GitHub repository is being fetched",
-      "searchRequested": "Searching DuckDuckGo...",
-      "memoryStored": "Memory stored ({{count}})."
+      "searchRequested": "Searching {{provider}}...",
+      "fileReadRequested": "Reading codebase file...",
+      "directorySearchRequested": "Searching codebase...",
+      "directoryListRequested": "Listing directory...",
+      "memoryStored": "Memory stored ({{count}}).",
+      "downloadMd": "Download as .md"
     },
     "sidebarMenu": {
       "tags": "Tags (BDS)",
@@ -772,6 +959,53 @@
       "seeAllChanges": "See all changes in v{{version}} on GitHub",
       "seeDetailed": "See detailed release notes on GitHub",
       "features": {
+        "v0_1_13": {
+          "title": "Emergency Hotfix 1",
+          "features": {
+            "feat_0": {
+              "title": "Crash Fix",
+              "description": "A recent DeepSeek update caused the extension to break. We have prepared an emergency fix to restore critical extension functionality. We are closely monitoring the situation and will release further hotfixes if needed."
+            },
+            "feat_1": {
+              "title": "Search Provider List",
+              "description": "Configure and prioritize your preferred search engines (Bing, DuckDuckGo Lite, DuckDuckGo HTML) directly in settings."
+            }
+          }
+        },
+        "v0_1_12": {
+          "title": "DeepCode, Queued Prompts & Stability",
+          "features": {
+            "feat_0": {
+              "title": "DeepCode (Experimental)",
+              "description": "Collaborative coding mode powered by DeepSeek Harness. Plan tasks in DeepSeek and send them directly to Harness using the <a href='https://github.com/EdgeTypE/dsh-better-deepseek' target='_blank' style='color: #4d6bfe; text-decoration: underline;'>dsh-better-deepseek</a> plugin."
+            },
+            "feat_1": {
+              "title": "Queued Prompts",
+              "description": "Send messages while DeepSeek is generating responses. BDS queues them and submits them automatically once generation completes."
+            },
+            "feat_2": {
+              "title": "Stability & UX Improvements",
+              "description": "Tool parser fixes for DeepSeek UI updates, export support for created skills/personas, legacy card cleanup, and Android search improvements."
+            }
+          }
+        },
+        "v0_1_11": {
+          "title": "MCP Servers, Dynamic Tables & Stability",
+          "features": {
+            "feat_0": {
+              "title": "MCP Server Support",
+              "description": "Connect remote MCP servers to DeepSeek for external tool access. Configure servers in Settings → Advanced Settings → MCP Servers."
+            },
+            "feat_1": {
+              "title": "Dynamic Tables",
+              "description": "Sort data and reorder columns directly in tables generated by DeepSeek."
+            },
+            "feat_2": {
+              "title": "Stability & UX Improvements",
+              "description": "Dozens of bug fixes and UI/UX improvements across the extension."
+            }
+          }
+        },
         "v0_1_10": {
           "title": "Stability & Improvement",
           "features": {
@@ -1004,7 +1238,8 @@
       "en": "English",
       "tr": "Türkçe",
       "ru": "Russian",
-      "zh-cn": "简体中文"
+      "zh-cn": "简体中文",
+      "fa": "فارسی"
     },
     "apiPlayground": {
       "title": "API Playground",
@@ -1105,6 +1340,43 @@
       "codeGen": "Code Gen",
       "promptSuffix": "Prompt Suffix"
     },
+    "queue": {
+      "title": "Queued Messages",
+      "waitingForAI": "Waiting for AI...",
+      "sendingNext": "Sending next...",
+      "clearAll": "Clear All",
+      "addToQueue": "Add to Queue",
+      "enterToQueueTip": "AI is generating. Press Enter to queue your prompt.",
+      "moveUp": "Move up",
+      "moveDown": "Move down",
+      "itemCount.one": "{{count}} item",
+      "itemCount.other": "{{count}} items"
+    },
+    "deepResearchRevision": {
+      "title": "Request Plan Changes",
+      "run": "Run: {{id}}",
+      "closeAria": "Close Deep Research revision",
+      "placeholder": "Describe what should change in the research plan...",
+      "cancel": "Cancel",
+      "submit": "Submit Feedback",
+      "cancelledToast": "Deep Research revision cancelled."
+    },
+    "tableInjector": {
+      "columnOptions": "Column options",
+      "hideRow": "Hide row",
+      "manageColumnsRows": "Manage columns & rows",
+      "sortAsc": "\u25B2 Sort A \u2192 Z",
+      "sortDesc": "\u25BC Sort Z \u2192 A",
+      "hideColumn": "Hide column",
+      "showColumn": "Show column",
+      "columns": "Columns",
+      "hiddenRows": "Hidden rows ({{count}})",
+      "showAll": "Show all columns & rows",
+      "columnLabel": "Column {{n}}"
+    },
+    "shareModal": {
+      "searchEngineWarning": "Shared conversations may be discovered and indexed by search engines."
+    },
     "tips": {
       "title": "\uD83D\uDCA1 Tip",
       "disableInSettings": "You can disable this from Settings.",
@@ -1115,7 +1387,12 @@
       "4": "Did you know you can activate Multi-System Prompt mode to use multiple system prompts at the same time, with various schedules and conditions to create your own custom workflow?",
       "5": "You can import your memories from another AI into BDS. Click \"Import memory from Another AI\" at the bottom of the Memory section.",
       "6": "Did you know Better DeepSeek also has an <a href=\"https://github.com/EdgeTypE/better-deepseek\" target=\"_blank\" rel=\"noopener noreferrer\">Android app</a>?",
-      "7": "If you like the extension, share it with your friends! To request a feature, let us know on our <a href=\"https://github.com/EdgeTypE/better-deepseek\" target=\"_blank\" rel=\"noopener noreferrer\">GitHub page</a>."
+      "7": "If you like the extension, share it with your friends! To request a feature, let us know on our <a href=\"https://github.com/EdgeTypE/better-deepseek\" target=\"_blank\" rel=\"noopener noreferrer\">GitHub page</a>.",
+      "8": "Did you know you can connect MCP servers to Better DeepSeek? Check the Advanced Settings.",
+      "9": "You can customize the interface however you like with Custom CSS.",
+      "10": "We want to add more language support to Better DeepSeek. If you want to add your own language, check it out <a href=\"https://github.com/EdgeTypE/better-deepseek/blob/main/LOCALIZATION.md\" target=\"_blank\" rel=\"noopener noreferrer\">here</a>. Also, if you notice any translation errors, you can fix them.",
+      "11": "You can assign tags to any chat session by clicking the ... button in the session history. Then use those tags to quickly search or filter your conversations.",
+      "12": "You can create new skills or characters just by asking DeepSeek. Simply tell it what you need."
     }
   }
 }

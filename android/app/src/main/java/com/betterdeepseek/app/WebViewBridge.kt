@@ -771,6 +771,11 @@ class WebViewBridge(
                 builder.header(k, headersJson.optString(k))
             }
         }
+        // Present a browser fingerprint: a bare OkHttp client sends "okhttp/<version>",
+        // which search engines challenge or serve irrelevant results to (especially for
+        // non-Latin queries). An explicit User-Agent in the payload wins over the default.
+        val explicitUserAgent = headersJson?.optString("User-Agent")?.takeIf { it.isNotBlank() }
+        builder.header("User-Agent", explicitUserAgent ?: DEFAULT_FETCH_USER_AGENT)
         when (method) {
             "GET" -> builder.get()
             "HEAD" -> builder.head()
@@ -789,26 +794,51 @@ class WebViewBridge(
             }
         }
 
-        httpClient.newCall(builder.build()).execute().use { resp ->
-            response.put("status", resp.code)
-            if (!resp.isSuccessful) {
-                response.put("ok", false)
-                response.put("error", "Server returned ${resp.code} for $url")
-                return
-            }
-            response.put("ok", true)
-            val bytes = resp.body?.bytes()
-            if (bytes != null) {
-                val charset = detectCharsetFromHeaders(resp) ?: detectCharsetFromHtml(bytes)
-                val html = try {
-                    String(bytes, Charset.forName(charset ?: "UTF-8"))
-                } catch (_: Exception) {
-                    String(bytes, Charset.forName("UTF-8"))
+        // Optional per-call budget mirroring the desktop service worker: a
+        // hanging provider must fail fast so the JS chain can move on to the
+        // next one (#148). Without this the shared client's 120s callTimeout
+        // would apply, blocking the bridged JS call for up to two minutes.
+        val callTimeoutMs = options?.optLong("timeoutMs", 0L)?.takeIf { it > 0L }
+        val client = if (callTimeoutMs != null) {
+            httpClient.newBuilder()
+                    .callTimeout(callTimeoutMs, TimeUnit.MILLISECONDS)
+                    .build()
+        } else {
+            httpClient
+        }
+
+        try {
+            client.newCall(builder.build()).execute().use { resp ->
+                response.put("status", resp.code)
+                if (!resp.isSuccessful) {
+                    response.put("ok", false)
+                    response.put("error", "Server returned ${resp.code} for $url")
+                    return
                 }
-                response.put("html", html)
-            } else {
-                response.put("html", "")
+                response.put("ok", true)
+                val bytes = resp.body?.bytes()
+                if (bytes != null) {
+                    val charset = detectCharsetFromHeaders(resp) ?: detectCharsetFromHtml(bytes)
+                    val html = try {
+                        String(bytes, Charset.forName(charset ?: "UTF-8"))
+                    } catch (_: Exception) {
+                        String(bytes, Charset.forName("UTF-8"))
+                    }
+                    response.put("html", html)
+                } else {
+                    response.put("html", "")
+                }
             }
+        } catch (e: java.io.IOException) {
+            response.put("ok", false)
+            response.put(
+                    "error",
+                    if (callTimeoutMs != null && e is java.net.SocketTimeoutException) {
+                        "Request timed out after ${callTimeoutMs}ms"
+                    } else {
+                        "Network error: ${e.message ?: e.javaClass.simpleName}"
+                    }
+            )
         }
     }
 
@@ -1109,6 +1139,13 @@ class WebViewBridge(
         private const val PREFS_NAME = "bds_storage"
         private const val DEFAULT_GITHUB_API_BASE_URL = "https://api.github.com"
         private const val DEFAULT_GITHUB_COMMIT_COUNT = 100
+        // Desktop Chrome UA for bds-fetch-url requests. Without it OkHttp sends
+        // "okhttp/<version>", which search engines treat as a bot: DDG responds
+        // with an anti-bot challenge (202) and Bing mishandles non-Latin queries
+        // (returns irrelevant results). This mirrors what the web extension
+        // effectively sends via Chrome's network stack.
+        private const val DEFAULT_FETCH_USER_AGENT =
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
         private const val GITHUB_COMMITS_PAGE_SIZE = 100
         // Must match STORAGE_KEYS.pageIsDark in src/lib/constants.js — the Android chrome.storage
         // polyfill routes chrome.storage.local.set({ bds_page_is_dark: ... }) through setStorage,
@@ -1133,7 +1170,7 @@ class WebViewBridge(
                         "json", "md", "txt", "py", "c", "cpp", "h", "hpp", "java", "go",
                         "rs", "rb", "php", "sh", "yml", "yaml", "toml", "ini", "csv", "sql",
                         "xml", "env", "cs", "csproj", "sln", "fs", "fsproj", "razor",
-                        "swift", "kt", "dart"
+                        "swift", "kt", "dart", "nix"
                 )
 
         internal val IMAGE_EXTENSIONS = setOf("png", "jpg", "jpeg", "webp", "gif", "bmp")

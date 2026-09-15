@@ -32,6 +32,7 @@
   import { getFlag, getConfig, REMOTE_CONFIG_EVENT, detectModelType } from "../../lib/remote-config.svelte.js";
   import { VADProcessor } from "../vad-processor.js";
   import { findActiveFileInput } from "../scanner.js";
+  import { sendFileWithMessage } from "../auto.js";
 
   // The native input[type="file"] reference passed from scanner
   let { nativeInput } = $props();
@@ -567,7 +568,8 @@
     closeMenu();
     if (isAndroidTarget && isNativeFilePickerAvailable()) {
       try {
-        const wantImages = currentModelType === "vision";
+        const imagesAllowed = getFlag("features.fileUpload.imagesEnabled") ?? true;
+        const wantImages = imagesAllowed && currentModelType !== "textOnly";
         const result = await nativePickFiles(wantImages ? "files+images" : "files");
         if (result.cancelled) return;
         const files = result.files || [];
@@ -592,6 +594,8 @@
       // "Upload File" path prefers the single-file strategy so WebView asks the
       // platform chooser for one file even though DeepSeek's DOM input is `multiple`.
       openNativeFilePicker(target, { preferSingle: isAndroidTarget });
+    } else {
+      checkExpertModeWarning();
     }
   }
 
@@ -628,8 +632,6 @@
       }
       return;
     }
-
-    if (!resolveNativeInput()) return;
 
     try {
       const result = await pickFolderAndConcatenate({
@@ -780,10 +782,24 @@
     }
   }
 
-  function injectFile(file) {
+  function checkExpertModeWarning() {
+    if (currentModelType === "expert" || currentModelType === "deepthink") {
+      if (appState.ui) {
+        appState.ui.showToast(t('attachMenu.expertModeWarning'));
+      }
+    }
+  }
+
+  async function injectFile(file) {
+    checkExpertModeWarning();
     const target = resolveNativeInput();
     if (!target) {
-      if (appState.ui) appState.ui.showToast(t('attachMenu.noInputField'));
+      try {
+        await sendFileWithMessage(file, "", "AttachMenu file fallback");
+      } catch (err) {
+        console.error("[AttachMenu] Fallback sendFileWithMessage failed:", err);
+        if (appState.ui) appState.ui.showToast(t('attachMenu.filePickFailed'));
+      }
       return;
     }
     const dt = new DataTransfer();
@@ -863,7 +879,7 @@
   }
 
   function attachPanelFiles() {
-    if (!resolveNativeInput() || !panelTickedIds.length) return;
+    if (!panelTickedIds.length) return;
     const activeFiles = panelFiles.filter((f) => panelTickedIds.includes(f.id));
     if (!activeFiles.length) return;
     const activeProject = panelProjects.find(

@@ -138,7 +138,7 @@ test("Upload File on Android uses native picker bridge and injects markdown", as
     .toContain("android-notes.md");
   await expect
     .poll(() => page.evaluate(() => window.__mockDeepSeek.nativeUploadFileMode))
-    .toBe("files");
+    .toBe("files+images");
   expect(await page.evaluate(() => window.__mockDeepSeek.uploadInputClickedDirectly)).toBe(false);
 });
 
@@ -468,7 +468,7 @@ test("imports a GitHub repository and commit history through the Android bridge"
     .filter({ hasText: "GitHub Repo" })
     .click({ force: true });
   await page.locator(".bds-github-input").fill("octocat/Hello-World");
-  await page.locator(".bds-github-checkbox input").check();
+  await page.locator(".bds-github-checkbox input").check({ force: true });
   await page.locator(".bds-github-btn-import").click({ force: true });
 
   await expect
@@ -526,7 +526,7 @@ test("routes blob downloads through AndroidBridge.downloadBlob", async ({ page }
   );
   await expect(page.locator(".bds-download-card")).toContainText("hello.txt");
 
-  await page.locator(".bds-download-card .bds-btn").click({ force: true });
+  await page.locator(".bds-download-card").getByRole("button", { name: "Download" }).click({ force: true });
 
   await expect
     .poll(async () =>

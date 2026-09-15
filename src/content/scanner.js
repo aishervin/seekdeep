@@ -2,7 +2,7 @@
  * DOM observation and page scanning.
  */
 
-import state, { withObserverPaused } from "./state.js";
+import state, { withObserverPaused, CHAT_OBSERVER_OPTIONS } from "./state.js";
 import { LONG_WORK_STALE_MS } from "../lib/constants.js";
 import { devLog } from "../lib/dev-log.js";
 import {
@@ -17,10 +17,13 @@ import AttachMenu from "./ui/AttachMenu.svelte";
 import ExpandToggle from "./ui/ExpandToggle.svelte";
 import RagPreview from "./ui/RagPreview.svelte";
 import DeepResearchToggle from "./ui/DeepResearchToggle.svelte";
+import DeepCodeToggle from "./ui/DeepCodeToggle.svelte";
 import { injectSearchInput } from "./ui/SidebarSearch.js";
 import { checkPendingExport } from "./tools/pending-export.js";
 import { hideTagsInSidebar, hideTagsInHeader, hideBdsTagsInPopovers } from "./tags/tag-hider.js";
+import { injectShareDialogWarning } from "./dom/share-dialog-injector.js";
 import { setDeepResearchEnabled } from "./deep-research.js";
+import { setDeepCodeEnabled, loadDeepCodeState } from "./deep-code.js";
 import { tryExecuteRawInput } from "./commands/executor.js";
 import { checkPendingHandoff } from "./commands/context-handoff.js";
 import Autocomplete from "./commands/Autocomplete.svelte";
@@ -117,15 +120,26 @@ function registerKnownNode(node) {
   }
 }
 
+let scanTimerArmedAt = 0;
+const MAX_SCAN_WAIT_MS = 100;
+
 // ── Internal: arm the shared debounce timer ──
 function armScanTimer() {
+  const now = Date.now();
   if (state.scanTimer) {
+    // If a timer is already pending within the max wait window, let it run
+    // rather than resetting indefinitely on rapid streaming token events.
+    if (now - scanTimerArmedAt < MAX_SCAN_WAIT_MS) {
+      return;
+    }
     clearTimeout(state.scanTimer);
   }
+  scanTimerArmedAt = now;
   state.scanTimer = window.setTimeout(() => {
     state.scanTimer = 0;
+    scanTimerArmedAt = 0;
     scanPage();
-  }, 140);
+  }, 60);
 }
 
 /**
@@ -218,7 +232,9 @@ export function isLatestAssistantMessage(node, nodes) {
  */
 function closestMessageNode(target) {
   if (!target || target === document.body || target === document.documentElement) return null;
-  const msg = target.closest?.("div.ds-message");
+  const el = target.nodeType === Node.ELEMENT_NODE ? target : target.parentElement;
+  if (!el || el.closest?.("#bds-root") || el.closest?.(".bds-host-wrapper")) return null;
+  const msg = el.closest?.("div.ds-message");
   return msg && !msg.closest("#bds-root") ? msg : null;
 }
 
@@ -236,15 +252,16 @@ export function observeChatDom() {
     let hasExternalMutation = false;
 
     for (const r of records) {
-      // Ignore records where the target itself is within #bds-root
-      if (r.target.closest?.("#bds-root")) continue;
+      const targetEl = r.target.nodeType === Node.ELEMENT_NODE ? r.target : r.target.parentElement;
+      // Ignore records where the target itself is within #bds-root or a BDS host
+      if (!targetEl || targetEl.closest?.("#bds-root") || targetEl.closest?.(".bds-host-wrapper")) continue;
 
       let recordHasExternal = false;
 
       // Collect removed message subtrees
       for (const removed of r.removedNodes) {
         if (removed.nodeType !== Node.ELEMENT_NODE) continue;
-        if (removed.closest?.("#bds-root")) continue;
+        if (removed.closest?.("#bds-root") || removed.closest?.(".bds-host-wrapper")) continue;
 
         recordHasExternal = true;
 
@@ -261,7 +278,7 @@ export function observeChatDom() {
       // Collect added/modified messages
       for (const added of r.addedNodes) {
         if (added.nodeType !== Node.ELEMENT_NODE) continue;
-        if (added.closest?.("#bds-root")) continue;
+        if (added.closest?.("#bds-root") || added.closest?.(".bds-host-wrapper")) continue;
 
         recordHasExternal = true;
 
@@ -282,9 +299,9 @@ export function observeChatDom() {
         }
       }
 
-      // For mutations without explicit message nodes, find closest message ancestor
+      // For mutations without explicit message nodes (or characterData mutations), find closest message ancestor
       const target = r.target;
-      if (target && target !== document.body && !target.closest?.("#bds-root")) {
+      if (target && target !== document.body) {
         const msg = closestMessageNode(target);
         if (msg) {
           recordHasExternal = true;
@@ -305,10 +322,7 @@ export function observeChatDom() {
     }
   });
 
-  state.observer.observe(document.body, {
-    subtree: true,
-    childList: true,
-  });
+  state.observer.observe(document.body, CHAT_OBSERVER_OPTIONS);
 }
 
 /**
@@ -465,6 +479,7 @@ function scanPage() {
     hideTagsInSidebar();
     hideTagsInHeader();
     hideBdsTagsInPopovers();
+    injectShareDialogWarning();
   });
 }
 
@@ -556,6 +571,27 @@ export function scanInputArea() {
       },
     });
     deepResearchMountPoint.dataset.bdsMounted = "1";
+  }
+
+  const isAndroidTarget = process.env.BDS_TARGET === "android";
+  if (!isAndroidTarget) {
+    const deepCodeMountPoint = ensureComposerMount(
+      deepResearchWrapper,
+      "bds-deep-code-mount",
+      ".bds-deep-code-toggle",
+      insertBeforeNode,
+    );
+    if (!deepCodeMountPoint.dataset.bdsMounted) {
+      mount(DeepCodeToggle, {
+        target: deepCodeMountPoint,
+        props: {
+          enabled: state.deepCode.enabled,
+          onToggle: (enabled) => setDeepCodeEnabled(enabled),
+          onOpenModal: () => window.dispatchEvent(new CustomEvent("bds:open-deep-code-modal")),
+        },
+      });
+      deepCodeMountPoint.dataset.bdsMounted = "1";
+    }
   }
 
   if (!fileInput || !wrapper) {
@@ -667,9 +703,17 @@ function findComposerControlsWrapper(fileInput) {
     return fileInput.parentElement;
   }
 
-  const sendButton = findDeepSeekSendButton();
+  const sendButton = findDeepSeekSendButton() || findDeepSeekStopButton();
   if (sendButton?.parentElement) {
-    return sendButton.parentElement;
+    const parent = sendButton.parentElement;
+    if (
+      parent !== document.body &&
+      (parent.style.width === "fit-content" ||
+        getComputedStyle(parent).width === "fit-content")
+    ) {
+      return parent.parentElement || parent;
+    }
+    return parent;
   }
 
   const editor = findComposerEditor();
@@ -827,8 +871,28 @@ function findDeepSeekSendButton() {
   }) || null;
 }
 
+function findDeepSeekStopButton() {
+  const buttons = Array.from(document.querySelectorAll('div[role="button"], button'));
+  return buttons.find((button) => {
+    if (button.closest("#bds-root")) {
+      return false;
+    }
+    return (
+      button.querySelector?.(".ds-icon-stop-circle, .ds-icon-stop") ||
+      button.querySelector?.('svg path[d*="M3 3h10v10H3z"], svg path[d*="M6 6h12v12H6z"], svg path[d*="M2 4.88"]') ||
+      button.title === "Stop generating" ||
+      button.title === "Stop" ||
+      button.getAttribute("aria-label")?.toLowerCase().includes("stop")
+    );
+  }) || null;
+}
+
 function findDeepResearchInsertAnchor(wrapper, fileInput, fileInputWrapper) {
   if (fileInput && wrapper === fileInputWrapper) {
+    const attachMount = wrapper.querySelector?.(".bds-attach-menu-mount");
+    if (attachMount && attachMount.parentElement === wrapper) {
+      return attachMount;
+    }
     return fileInput;
   }
 
@@ -838,6 +902,7 @@ function findDeepResearchInsertAnchor(wrapper, fileInput, fileInputWrapper) {
 function findComposerInsertAnchor(wrapper) {
   return Array.from(wrapper.children).find((child) =>
     !child.classList?.contains("bds-deep-research-mount") &&
+    !child.classList?.contains("bds-deep-code-mount") &&
     !child.closest?.("#bds-root")
   ) || null;
 }
@@ -850,6 +915,7 @@ function findNativeFileInputTrigger(fileInput) {
 
   if (
     candidate.classList?.contains("bds-deep-research-mount") ||
+    candidate.classList?.contains("bds-deep-code-mount") ||
     candidate.classList?.contains("bds-attach-menu-mount") ||
     candidate.classList?.contains("bds-expand-toggle-mount") ||
     candidate.classList?.contains("bds-rag-preview-mount")
@@ -871,7 +937,7 @@ function ensureComposerMount(wrapper, className, descendantSelector, beforeNode)
     child.classList && child.classList.contains(className)
   );
 
-  if (!mountPoint && className === "bds-deep-research-mount") {
+  if (!mountPoint && (className === "bds-deep-research-mount" || className === "bds-deep-code-mount")) {
     mountPoint = document.querySelector(`.${className}`);
   }
 
@@ -889,40 +955,38 @@ function ensureComposerMount(wrapper, className, descendantSelector, beforeNode)
   if (mountPoint.querySelector && mountPoint.querySelector(descendantSelector)) {
     mountPoint.dataset.bdsMounted = "1";
   }
-  if (mountPoint.parentElement !== wrapper || mountPoint.nextSibling !== beforeNode) {
+  if (mountPoint.parentElement !== wrapper) {
     wrapper.insertBefore(mountPoint, beforeNode);
   }
   return mountPoint;
 }
 
 /**
- * Transforms the logo div into a real <a> tag to support "Open in new tab".
+ * Overlays an <a> tag over the logo div to support "Open in new tab" without reparenting.
  */
 function linkifyLogo() {
   // Look for the DeepSeek logo SVG
   const logoSvg = document.querySelector('svg[viewBox="0 0 143 23"]');
   if (!logoSvg) return;
 
-  // The clickable container is usually a few levels up
-  // Based on user snippet: svg -> div (logo container) -> div (outer container)
   const container = logoSvg.closest('div');
-  if (!container || container.tagName === 'A' || container.parentElement?.tagName === 'A') {
+  if (!container || container.tagName === 'A' || container.closest('a')) {
     return;
   }
 
-  // Find the highest div that is still part of the "logo" area before hitting the nav/header
-  // In the snippet, _262baab seems like the main clickable block.
   let target = container;
   if (target.parentElement && target.parentElement.classList.contains('_262baab')) {
     target = target.parentElement;
   }
 
-  if (target.tagName === 'A') return;
+  if (target.tagName === 'A' || target.querySelector(':scope > .bds-logo-link')) return;
 
-  // Wrap it in an anchor
+  target.style.position = target.style.position || 'relative';
+
   const link = document.createElement('a');
   link.href = '/';
   link.className = 'bds-logo-link';
+  link.setAttribute('data-bds-linkified', 'true');
 
   link.addEventListener('click', (e) => {
     if (e.button === 0 && !e.ctrlKey && !e.shiftKey && !e.altKey && !e.metaKey) {
@@ -930,21 +994,13 @@ function linkifyLogo() {
     }
   });
 
-  // Copy some essential layout classes if needed, but mostly we want to wrap it
-  target.parentNode.insertBefore(link, target);
-  link.appendChild(target);
-
-  // Prevent the link from being processed multiple times
-  link.setAttribute('data-bds-linkified', 'true');
+  target.appendChild(link);
 }
 
 /**
- * Transforms the "New Chat" div button into a real <a> tag.
+ * Overlays an <a> tag over the "New Chat" div button without reparenting.
  */
 function linkifyNewChatButton() {
-  // Look for the "Yeni sohbet" or "New chat" text
-  // Since text might change with language, we use the SVG path or class if observed.
-  // The SVG path provided by the user is quite unique: starts with M8 0.599609
   const allSvgs = document.querySelectorAll('svg');
   let newChatSvg = null;
   for (const svg of allSvgs) {
@@ -957,16 +1013,17 @@ function linkifyNewChatButton() {
   if (!newChatSvg) return;
 
   const container = newChatSvg.closest('div[tabindex="0"]');
-  if (!container || container.tagName === 'A' || container.parentElement?.tagName === 'A') {
+  if (!container || container.tagName === 'A' || container.closest('a')) {
     return;
   }
 
-  if (container.hasAttribute('data-bds-linkified')) return;
+  if (container.querySelector(':scope > .bds-logo-link') || container.hasAttribute('data-bds-linkified')) return;
 
-  // Wrap it in an anchor
+  container.style.position = container.style.position || 'relative';
+
   const link = document.createElement('a');
   link.href = '/';
-  link.className = 'bds-logo-link'; // Reuse the same CSS for pass-through styling
+  link.className = 'bds-logo-link';
   link.setAttribute('data-bds-linkified', 'true');
 
   link.addEventListener('click', (e) => {
@@ -975,8 +1032,7 @@ function linkifyNewChatButton() {
     }
   });
 
-  container.parentNode.insertBefore(link, container);
-  link.appendChild(container);
+  container.appendChild(link);
 }
 
 /**

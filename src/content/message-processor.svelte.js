@@ -2,7 +2,7 @@
  * Process individual chat message nodes — detect tools, files, memory writes.
  */
 
-import state from "./state.js";
+import state, { withObserverPaused } from "./state.js";
 import { simpleHash } from "../lib/utils/hash.js";
 import {
   detectMessageRole,
@@ -10,13 +10,15 @@ import {
   isAbsoluteLastMessage,
   scheduleScan,
   scheduleMessageScan,
-  collectMessageNodes
+  collectMessageNodes,
+  findLatestAssistantMessageNode
 } from "./scanner.js";
 import { extractMessageRawText } from "./dom/message-text.js";
 import { injectPythonRunButtons } from "./dom/python-injector.js";
 import { injectJavaScriptRunButtons } from "./dom/javascript-injector.js";
 import { injectLuaRunButtons } from "./dom/lua-injector.js";
 import { injectRubyRunButtons } from "./dom/ruby-injector.js";
+import { injectDynamicTableFeatures } from "./dom/table-injector.js";
 import { parseBdsMessage } from "./parser/index.js";
 import { cleanBdsString } from "./tags/tag-hider.js";
 import { upsertMemories } from "./parser/memory-parser.js";
@@ -30,9 +32,19 @@ import {
   removeAllMessageHosts,
   removeMessageHost,
 } from "./dom/host.js";
-import { handleAutoWebFetch, handleAutoGitHubFetch, handleAutoTwitterFetch, handleAutoYouTubeFetch, handleAutoSearch, handleAutoSearchForRun, handleAutoMcpCall } from "./auto.js";
+import { handleAutoWebFetch, handleAutoGitHubFetch, handleAutoTwitterFetch, handleAutoYouTubeFetch, handleAutoSearch, handleAutoSearchForRun, handleAutoMcpCall, handleAutoFileRead, handleAutoSearchInDirectory, handleAutoListDir, findChatEditor } from "./auto.js";
 import { handleManagedAutoContinuation, isManagedRunActive, trySynthesizeReport } from "./deep-research.js";
 
+import {
+  safeAppendChild,
+  safeInsertBefore,
+  safeRemove,
+  safeSetTextContent,
+  safeAddClass,
+  safeRemoveClass,
+  safeSetAttribute,
+  safeRemoveAttribute,
+} from "./dom/dom-safety.js";
 import { mount, unmount } from "svelte";
 import MessageOverlay from "./ui/MessageOverlay.svelte";
 import { i18n } from "../lib/i18n.svelte.js";
@@ -46,6 +58,9 @@ const nodeStates = new WeakMap();
 const userMsgCleaned = new WeakSet();
 const readMessages = new WeakSet();
 const processedSearchResultCards = new WeakSet();
+const processedFileReadResultCards = new WeakSet();
+const processedDirSearchResultCards = new WeakSet();
+const processedDirListResultCards = new WeakSet();
 const pricingContributions = new Map();
 
 function removePricingContribution(node) {
@@ -78,6 +93,23 @@ export function resetMessagePricing() {
   state.pricing.sessionOutputTokens = 0;
   state.pricing.sessionTotals = { inputCost: 0, outputCost: 0, totalCost: 0 };
   document.querySelector(".bds-session-total")?.remove();
+}
+
+// Generation tracker state for isSystemGenerating()'s composer-text fallback.
+// DeepSeek hides the stop button while the composer has text, so the fallback
+// must only report "generating" when generation was recently observed, to avoid
+// treating an idle chat with a draft as generating (e.g. a response whose action
+// buttons have not mounted yet, or a stopped response).
+const GENERATING_GRACE_MS = 30_000;
+const STREAMING_IDLE_MS = 5_000;
+let lastGeneratingSeenAt = 0;
+let lastAssistantSig = null;
+let lastAssistantSigAt = 0;
+
+export function resetGeneratingTracker() {
+  lastGeneratingSeenAt = 0;
+  lastAssistantSig = null;
+  lastAssistantSigAt = 0;
 }
 
 /**
@@ -177,6 +209,7 @@ export function processMessageNode(node, nodeIndex = -1, nodes = null, context =
   injectJavaScriptRunButtons(node);
   injectLuaRunButtons(node);
   injectRubyRunButtons(node);
+  injectDynamicTableFeatures(node);
   injectSelectionCheckbox(node);
   injectBookmarkButton(node);
 
@@ -233,6 +266,31 @@ export function processMessageNode(node, nodeIndex = -1, nodes = null, context =
         };
 
         mountMcpResultOverlay(node, stateData, [stateData.mcpResultBlock]);
+      }
+    } else if (rawUserText.includes("[BDS:AUTO_MCP_ERROR]")) {
+      const jsonMatch = rawUserText.match(/\[BDS:AUTO_MCP_ERROR\]\s*([\s\S]*?)\s*\[\/BDS:AUTO_MCP_ERROR\]/);
+      if (jsonMatch) {
+        let parsedData = { serverName: "", toolName: "", args: "{}", error: "" };
+        try {
+          const data = JSON.parse(jsonMatch[1].trim());
+          parsedData = {
+            serverName: data.serverName || data.serverUrl || "",
+            toolName: data.toolName || "",
+            args: JSON.stringify(data.args || {}),
+            error: data.error || "",
+          };
+        } catch (e) {
+          console.error("[BDS:AUTO_MCP_ERROR] Failed to parse JSON:", e);
+        }
+
+        stateData.hasControlTags = true;
+        const errorBlock = {
+          name: "auto:mcp_error",
+          attrs: { serverName: parsedData.serverName, toolName: parsedData.toolName, args: parsedData.args },
+          content: parsedData.error,
+        };
+
+        mountMcpResultOverlay(node, stateData, [errorBlock]);
       }
     } else {
       // --- MCP RESULT CARD (USER) — legacy format <BDS:AUTO:MCP_RESULT> ---
@@ -299,12 +357,16 @@ export function processMessageNode(node, nodeIndex = -1, nodes = null, context =
       if (jsonMatch) {
         let parsedCount = "0";
         let parsedDeepFetch = "0";
+        let parsedProvider = "";
+        let parsedLowConfidence = false;
         let parsedResults = "[]";
         try {
           const data = JSON.parse(jsonMatch[1].trim());
           parsedResults = JSON.stringify(data.results || []);
           parsedCount = String(data.count ?? data.results?.length ?? 0);
           parsedDeepFetch = String(data.deepFetch ?? 0);
+          parsedProvider = String(data.provider || "");
+          parsedLowConfidence = data.lowConfidence === true;
         } catch (e) {
           console.error("[BDS:AUTO_SEARCH_RESULT] Failed to parse JSON:", e);
         }
@@ -316,7 +378,7 @@ export function processMessageNode(node, nodeIndex = -1, nodes = null, context =
           const existing = messageOverlays.get(node);
           const newBlocks = [{
             name: "auto_search_result",
-            attrs: { query, count: parsedCount, deepFetch: parsedDeepFetch },
+            attrs: { query, count: parsedCount, deepFetch: parsedDeepFetch, provider: parsedProvider, lowConfidence: parsedLowConfidence },
             content: parsedResults
           }];
 
@@ -331,6 +393,166 @@ export function processMessageNode(node, nodeIndex = -1, nodes = null, context =
           }
           syncVisibilityState(node, false, stateData, true);
         }
+      }
+    }
+
+    // --- FILE READ RESULT CARD (USER) ---
+    if (rawUserText.includes("[BDS:AUTO_FILE_READ_RESULT]") || rawUserText.includes("[BDS:AUTO] File Read Result for path:") || rawUserText.includes("[BDS:AUTO] File read requested for")) {
+      const jsonMatch = rawUserText.match(/\[BDS:AUTO_FILE_READ_RESULT\]\s*([\s\S]*?)\s*\[\/BDS:AUTO_FILE_READ_RESULT\]/);
+      let data = null;
+      if (jsonMatch) {
+        try {
+          data = JSON.parse(jsonMatch[1].trim());
+        } catch (e) {
+          console.error("[BDS:AUTO_FILE_READ_RESULT] Failed to parse JSON:", e);
+        }
+      }
+
+      if (!data) {
+        const pathMatch = rawUserText.match(/\[BDS:AUTO\] File (?:Read Result for path|read requested for):?\s*"([^"]+)"/i);
+        const path = pathMatch ? pathMatch[1] : "";
+        const isError = rawUserText.includes("was not found");
+        data = {
+          path,
+          fileName: path.split("/").pop() || path,
+          linesCount: 0,
+          success: !isError,
+          error: isError ? "File was not found in the active codebase directory." : "",
+          content: ""
+        };
+      }
+
+      if (data && !processedFileReadResultCards.has(node)) {
+        processedFileReadResultCards.add(node);
+        stateData.hasControlTags = true;
+
+        const existing = messageOverlays.get(node);
+        const newBlocks = [{
+          name: "auto_file_read_result",
+          attrs: {
+            path: data.path || "",
+            fileName: data.fileName || data.path || "",
+            linesCount: data.linesCount || 0,
+            success: data.success !== false,
+            error: data.error || "",
+          },
+          content: data.content || ""
+        }];
+
+        if (existing) {
+          existing.props.blocks = newBlocks;
+        } else {
+          const host = getOrCreateHost(node, "bds-overlay-host");
+          removeStaleMessageOverlays(host);
+          const props = $state({ text: "", blocks: newBlocks, loading: false });
+          const component = mount(MessageOverlay, { target: host, props });
+          messageOverlays.set(node, { component, props, host });
+        }
+        syncVisibilityState(node, false, stateData, true);
+      }
+    }
+
+    // --- DIRECTORY SEARCH RESULT CARD (USER) ---
+    if (rawUserText.includes("[BDS:AUTO_DIR_SEARCH_RESULT]") || rawUserText.includes("[BDS:AUTO] Codebase Search Results for:") || rawUserText.includes("[BDS:AUTO] Directory search requested for")) {
+      const jsonMatch = rawUserText.match(/\[BDS:AUTO_DIR_SEARCH_RESULT\]\s*([\s\S]*?)\s*\[\/BDS:AUTO_DIR_SEARCH_RESULT\]/);
+      let data = null;
+      if (jsonMatch) {
+        try {
+          data = JSON.parse(jsonMatch[1].trim());
+        } catch (e) {
+          console.error("[BDS:AUTO_DIR_SEARCH_RESULT] Failed to parse JSON:", e);
+        }
+      }
+
+      if (!data) {
+        const queryMatch = rawUserText.match(/\[BDS:AUTO\] (?:Codebase Search Results for|Directory search requested for):\s*"([^"]+)"/i);
+        const query = queryMatch ? queryMatch[1] : "";
+        const isError = rawUserText.includes("no active directory is linked");
+        data = {
+          query,
+          count: 0,
+          results: [],
+          error: isError ? "No active directory is linked in DeepCode." : ""
+        };
+      }
+
+      if (data && !processedDirSearchResultCards.has(node)) {
+        processedDirSearchResultCards.add(node);
+        stateData.hasControlTags = true;
+
+        const existing = messageOverlays.get(node);
+        const newBlocks = [{
+          name: "auto_directory_search_result",
+          attrs: {
+            query: data.query || "",
+            count: String(data.count ?? data.results?.length ?? 0),
+            error: data.error || "",
+          },
+          content: typeof data.results === "string" ? data.results : JSON.stringify(data.results || [])
+        }];
+
+        if (existing) {
+          existing.props.blocks = newBlocks;
+        } else {
+          const host = getOrCreateHost(node, "bds-overlay-host");
+          removeStaleMessageOverlays(host);
+          const props = $state({ text: "", blocks: newBlocks, loading: false });
+          const component = mount(MessageOverlay, { target: host, props });
+          messageOverlays.set(node, { component, props, host });
+        }
+        syncVisibilityState(node, false, stateData, true);
+      }
+    }
+
+    // --- DIRECTORY LIST RESULT CARD (USER) ---
+    if (rawUserText.includes("[BDS:AUTO_DIR_LIST_RESULT]") || rawUserText.includes("[BDS:AUTO] Directory listing requested for") || rawUserText.includes("[BDS:AUTO] Directory listing for path:")) {
+      const jsonMatch = rawUserText.match(/\[BDS:AUTO_DIR_LIST_RESULT\]\s*([\s\S]*?)\s*\[\/BDS:AUTO_DIR_LIST_RESULT\]/);
+      let data = null;
+      if (jsonMatch) {
+        try {
+          data = JSON.parse(jsonMatch[1].trim());
+        } catch (e) {
+          console.error("[BDS:AUTO_DIR_LIST_RESULT] Failed to parse JSON:", e);
+        }
+      }
+
+      if (!data) {
+        const pathMatch = rawUserText.match(/\[BDS:AUTO\] Directory (?:listing requested for|listing for path):\s*"([^"]+)"/i);
+        const path = pathMatch ? pathMatch[1] : "";
+        const isError = rawUserText.includes("is a file, not a directory") || rawUserText.includes("was not found");
+        data = {
+          path,
+          childCount: 0,
+          entries: [],
+          error: isError ? "The requested directory could not be listed." : ""
+        };
+      }
+
+      if (data && !processedDirListResultCards.has(node)) {
+        processedDirListResultCards.add(node);
+        stateData.hasControlTags = true;
+
+        const existing = messageOverlays.get(node);
+        const newBlocks = [{
+          name: "auto_dir_list_result",
+          attrs: {
+            path: data.path || "",
+            childCount: String(data.childCount ?? data.entries?.length ?? 0),
+            error: data.error || "",
+          },
+          content: JSON.stringify(data.entries || [])
+        }];
+
+        if (existing) {
+          existing.props.blocks = newBlocks;
+        } else {
+          const host = getOrCreateHost(node, "bds-overlay-host");
+          removeStaleMessageOverlays(host);
+          const props = $state({ text: "", blocks: newBlocks, loading: false });
+          const component = mount(MessageOverlay, { target: host, props });
+          messageOverlays.set(node, { component, props, host });
+        }
+        syncVisibilityState(node, false, stateData, true);
       }
     }
 
@@ -456,7 +678,10 @@ export function processMessageNode(node, nodeIndex = -1, nodes = null, context =
     parsed.autoRequests.twitterFetch.length > 0 ||
     parsed.autoRequests.youtubeFetch.length > 0 ||
     parsed.autoRequests.searchQueries.length > 0 ||
-    parsed.autoRequests.mcpCalls.length > 0;
+    parsed.autoRequests.mcpCalls.length > 0 ||
+    (parsed.autoRequests.fileRead && parsed.autoRequests.fileRead.length > 0) ||
+    (parsed.autoRequests.searchInDirectory && parsed.autoRequests.searchInDirectory.length > 0) ||
+    (parsed.autoRequests.dirList && parsed.autoRequests.dirList.length > 0);
   const currentConversationId = getCurrentConversationIdInline();
   const managedAutoSuppressionRun = getManagedAutoSuppressionRun(parsed, currentConversationId);
   const suppressManagedAuto = Boolean(managedAutoSuppressionRun);
@@ -472,6 +697,10 @@ export function processMessageNode(node, nodeIndex = -1, nodes = null, context =
       if (!stateData.autoTwitterFetchesHandled) stateData.autoTwitterFetchesHandled = new Set();
       if (!stateData.autoYouTubeFetchesHandled) stateData.autoYouTubeFetchesHandled = new Set();
       if (!stateData.autoSearchQueriesHandled) stateData.autoSearchQueriesHandled = new Set();
+      if (!stateData.autoMcpCallsHandled) stateData.autoMcpCallsHandled = new Set();
+      if (!stateData.autoFileReadsHandled) stateData.autoFileReadsHandled = new Set();
+      if (!stateData.autoDirSearchesHandled) stateData.autoDirSearchesHandled = new Set();
+      if (!stateData.autoDirListsHandled) stateData.autoDirListsHandled = new Set();
 
       // Stray AUTO tags are treated as continuation attempts and recovered below.
       for (const url of parsed.autoRequests.webFetch) {
@@ -521,7 +750,35 @@ export function processMessageNode(node, nodeIndex = -1, nodes = null, context =
 
       for (const mcp of parsed.autoRequests.mcpCalls) {
         if (suppressManagedAuto) continue;
-        handleAutoMcpCall(mcp.serverUrl, mcp.toolName, mcp.args);
+        const mcpKey = `${mcp.serverUrl}|${mcp.toolName}|${JSON.stringify(mcp.args)}`;
+        if (!stateData.autoMcpCallsHandled.has(mcpKey)) {
+          stateData.autoMcpCallsHandled.add(mcpKey);
+          handleAutoMcpCall(mcp.serverUrl, mcp.toolName, mcp.args);
+        }
+      }
+
+      for (const filePath of (parsed.autoRequests.fileRead || [])) {
+        if (suppressManagedAuto) continue;
+        if (!stateData.autoFileReadsHandled.has(filePath)) {
+          stateData.autoFileReadsHandled.add(filePath);
+          handleAutoFileRead(filePath);
+        }
+      }
+
+      for (const queries of (parsed.autoRequests.searchInDirectory || [])) {
+        if (suppressManagedAuto) continue;
+        if (!stateData.autoDirSearchesHandled.has(queries)) {
+          stateData.autoDirSearchesHandled.add(queries);
+          handleAutoSearchInDirectory(queries);
+        }
+      }
+
+      for (const dirPath of (parsed.autoRequests.dirList || [])) {
+        if (suppressManagedAuto) continue;
+        if (!stateData.autoDirListsHandled.has(dirPath)) {
+          stateData.autoDirListsHandled.add(dirPath);
+          handleAutoListDir(dirPath);
+        }
       }
 
       if (
@@ -668,7 +925,7 @@ export function processMessageNode(node, nodeIndex = -1, nodes = null, context =
         ? Array.from(state.longWork.files.entries()).map(([path, content]) => ({ path, content }))
         : parsed.createFiles.map(f => ({ path: f.fileName, content: f.content }));
 
-      const fileHost = node.nextElementSibling?.querySelector('.bds-file-host');
+      const fileHost = node.querySelector('.bds-file-host');
       const isMounted = fileHost && fileHost.querySelector('.bds-download-card');
       
       const needsEmit = !stateData.longWorkClosed || 
@@ -867,7 +1124,14 @@ function hasDeepResearchEvents(parsed) {
  * visually matches the surrounding message text.
  */
 function matchNativeStyles(node, host) {
-  const md = node.querySelector('.ds-markdown, [class*="markdown"]');
+  const allMd = node.querySelectorAll('.ds-markdown, [class*="markdown"]');
+  let md = null;
+  for (const el of allMd) {
+    if (!el.closest('.bds-host-wrapper') && !el.closest('#bds-root')) {
+      md = el;
+      break;
+    }
+  }
   if (!md) return;
   const cs = getComputedStyle(md);
   host.style.fontFamily = cs.fontFamily;
@@ -947,8 +1211,16 @@ function dispatchDeepResearchEvents(parsed, stateData) {
 /**
  * Checks if DeepSeek is currently generating ANY response on the page.
  * Uses the presence of the 'Stop Generation' button as a global indicator.
+ *
+ * DeepSeek (Aug 2026) hides the stop button while the composer has text even
+ * during generation (the send button is shown instead). When the stop button
+ * is missing but the composer is non-empty, fall back to the message-level
+ * streaming signal — but only within a grace period after generation was
+ * actually observed, and only while the latest assistant message is still
+ * growing or lacks action buttons.
  */
 export function isSystemGenerating() {
+  if (typeof document === "undefined") return false;
   const selectors = remoteConfig.getConfig("selectors.stopButton.selectors") || [
     ".ds-icon-stop-circle",
     ".ds-icon-stop",
@@ -957,7 +1229,46 @@ export function isSystemGenerating() {
     'div[role="button"] svg path[d*="M2 4.88"]',
   ]
   const selectorStr = (Array.isArray(selectors) ? selectors : [selectors]).join(", ")
-  return !!document.querySelector(selectorStr)
+  if (document.querySelector(selectorStr)) {
+    lastGeneratingSeenAt = Date.now()
+    return true
+  }
+
+  const editor = findChatEditor()
+  if (!editor) return false
+  const tagName = String(editor.tagName || "").toLowerCase()
+  const editorText = (tagName === "textarea" || tagName === "input") ? (editor.value || "") : (editor.textContent || "")
+  if (!editorText.trim()) return false
+
+  // The stop button is hidden while the composer has text. Only trust the
+  // message-level signal when generation was observed recently.
+  if (Date.now() - lastGeneratingSeenAt > GENERATING_GRACE_MS) return false
+
+  const latestAssistant = findLatestAssistantMessageNode()
+  if (!latestAssistant) return false
+  if (latestAssistant.querySelector(".ds-cursor") || latestAssistant.classList.contains("_streaming")) {
+    lastGeneratingSeenAt = Date.now()
+    return true
+  }
+  if (latestAssistant.querySelector('div[role="button"] svg, .ds-icon-copy, .ds-icon-regenerate, .ds-icon-share')) return false
+
+  // No action buttons yet: treat the response as streaming while its text
+  // keeps growing, and for a short idle window after the last growth. The
+  // first evaluation only records the signature (conservative) so a stale
+  // message (e.g. a stopped response) is never mistaken for active streaming.
+  const text = latestAssistant.textContent || ""
+  const sig = text.length + ":" + text.slice(-64)
+  if (lastAssistantSig === null) {
+    lastAssistantSig = sig
+    return false
+  }
+  if (sig !== lastAssistantSig) {
+    lastAssistantSig = sig
+    lastAssistantSigAt = Date.now()
+    lastGeneratingSeenAt = Date.now()
+    return true
+  }
+  return Date.now() - lastAssistantSigAt <= STREAMING_IDLE_MS
 }
 
 /**
@@ -1046,8 +1357,8 @@ function applyRtlToNative(node, isRtl) {
   const allMarkdown = node.querySelectorAll('.ds-markdown, [class*="markdown"]');
   
   for (const target of allMarkdown) {
-    // Skip cursor elements
-    if (target.closest('.ds-cursor')) continue;
+    // Skip cursor elements and BDS containers
+    if (target.closest('.ds-cursor') || target.closest('.bds-host-wrapper') || target.closest('#bds-root')) continue;
     
     target.setAttribute('dir', 'rtl');
     target.style.direction = 'rtl';
@@ -1098,6 +1409,10 @@ function hideMessageNode(node, hidden) {
   for (const selector of contentSelectors) {
     const elements = node.querySelectorAll(selector);
     elements.forEach(el => {
+      // NEVER touch elements that belong to BDS overlays or hosts
+      if (el.closest('.bds-host-wrapper') || el.closest('#bds-root') || el.closest('.bds-message-overlay')) {
+        return;
+      }
       // Ignore components that are inside think segments
       if (!el.closest('.ds-think-content') && !el.closest('div[class*="think"]')) {
         foundElements.push(el);
@@ -1106,8 +1421,6 @@ function hideMessageNode(node, hidden) {
   }
 
   if (foundElements.length === 0) {
-    // Fallback: If no content container found yet, hide the whole node
-    toggleNodeHidden(node, hidden);
     return;
   }
 
@@ -1130,34 +1443,68 @@ function toggleNodeHidden(el, hidden) {
 /**
  * Strip <BetterDeepSeek>...</BetterDeepSeek> blocks from user message DOM.
  * Operates on the actual DOM text so the user never sees the injected system prompt.
+ * Uses non-destructive in-place TextNode updates so React reconciler node references remain intact.
  */
 function stripBdsTagsFromUserMessage(node) {
   if (userMsgCleaned.has(node)) return;
 
   // Find the text container inside the user message bubble
-  const textContainer = node.querySelector('.fbb737a4') || node.querySelector('.ds-markdown');
+  const textContainer =
+    node.querySelector(".fbb737a4") ||
+    node.querySelector(".ds-markdown") ||
+    node.querySelector(".ds-collapsible-text") ||
+    node;
   if (!textContainer) return;
 
-  // Use textContent for detection — innerHTML has HTML-encoded angle brackets (&lt; &gt;)
-  const plainText = textContainer.textContent || '';
+  // Use textContent for detection
+  const plainText = textContainer.textContent || "";
   if (!/BetterDeepSeek|BDS:/i.test(plainText)) return;
 
   // Mark as processed before modifying to prevent re-entry
   userMsgCleaned.add(node);
 
-  // innerHTML has &lt;BetterDeepSeek&gt; (HTML-encoded) or raw form, so match with cleanBdsString
-  const html = textContainer.innerHTML;
-  const cleanedText = cleanBdsString(html);
+  // Collect all text nodes inside textContainer
+  const textNodes = [];
+  const walk = document.createTreeWalker(textContainer, NodeFilter.SHOW_TEXT, null, false);
+  while (walk.nextNode()) {
+    textNodes.push(walk.currentNode);
+  }
 
-  if (cleanedText) {
-    // Avoid direct innerHTML assignment to satisfy security linters.
-    // We use a temporary parser to reconstruct the sanitized nodes.
-    const parser = new DOMParser();
-    const doc = parser.parseFromString(cleanedText, 'text/html');
-    textContainer.replaceChildren(...doc.body.childNodes);
-  } else {
-    // If the entire message was the system prompt, hide the whole bubble
-    node.style.display = 'none';
+  if (textNodes.length === 0) {
+    const cleaned = cleanBdsString(plainText);
+    if (cleaned) {
+      safeSetTextContent(textContainer, cleaned);
+    } else {
+      toggleNodeHidden(node, true);
+    }
+    return;
+  }
+
+  // First attempt: clean each TextNode individually to preserve DOM and paragraph structure
+  withObserverPaused(() => {
+    for (const tNode of textNodes) {
+      if (/BetterDeepSeek|BDS:/i.test(tNode.nodeValue || "")) {
+        tNode.nodeValue = cleanBdsString(tNode.nodeValue || "");
+      }
+    }
+  });
+
+  // If tags spanned across text node boundaries, fall back to combined cleaning
+  const remainingText = textContainer.textContent || "";
+  if (/BetterDeepSeek|BDS:/i.test(remainingText)) {
+    const fullText = textNodes.map((t) => t.nodeValue || "").join("");
+    const cleanedText = cleanBdsString(fullText);
+    withObserverPaused(() => {
+      textNodes[0].nodeValue = cleanedText;
+      for (let i = 1; i < textNodes.length; i++) {
+        textNodes[i].nodeValue = "";
+      }
+    });
+  }
+
+  // If the entire message was the system prompt (now empty), safely hide the whole bubble
+  if (!(textContainer.textContent || "").trim()) {
+    toggleNodeHidden(node, true);
   }
 }
 
@@ -1178,7 +1525,7 @@ function calcCostInlineWithCache(inputNewTokens, inputCachedTokens, outputTokens
   const resolved = detectModelInline(modelName);
   const m = pricing.models[resolved] || pricing.models["deepseek-v4-flash"];
   const newCost = (inputNewTokens / 1e6) * m.inputPrice;
-  const cachedCost = (inputCachedTokens / 1e6) * (m.inputCacheHitPrice || 0.0028);
+  const cachedCost = (inputCachedTokens / 1e6) * (m.inputCacheHitPrice || 0.007);
   const outputCost = (outputTokens / 1e6) * m.outputPrice;
   return { inputCost: newCost + cachedCost, outputCost, totalCost: newCost + cachedCost + outputCost };
 }
@@ -1450,7 +1797,7 @@ function injectSelectionCheckbox(node) {
   let id = node.getAttribute("data-bds-msg-id");
   if (!id) {
     id = "msg-" + Math.random().toString(36).substring(2, 11);
-    node.setAttribute("data-bds-msg-id", id);
+    safeSetAttribute(node, "data-bds-msg-id", id);
   }
   checkbox.setAttribute("data-bds-message-id", id);
 
@@ -1465,12 +1812,8 @@ function injectSelectionCheckbox(node) {
 
   container.appendChild(checkbox);
   
-  // Inser at the very beginning of the message node
-  if (node.firstChild) {
-    node.insertBefore(container, node.firstChild);
-  } else {
-    node.appendChild(container);
-  }
+  // Safe append inside message node (Child-Host pattern)
+  safeAppendChild(node, container);
 }
 
 function injectBookmarkButton(node) {
@@ -1483,7 +1826,7 @@ function injectBookmarkButton(node) {
   let msgId = node.getAttribute("data-bds-msg-id");
   if (!msgId) {
     msgId = "msg-" + Math.random().toString(36).substring(2, 11);
-    node.setAttribute("data-bds-msg-id", msgId);
+    safeSetAttribute(node, "data-bds-msg-id", msgId);
   }
 
   const isBookmarked = state.savedItems.some(item => item.messageNodeId === msgId && item.type === "bookmark");
@@ -1531,7 +1874,7 @@ function injectBookmarkButton(node) {
     if (already) {
       state.savedItems = state.savedItems.filter(item => !(item.messageNodeId === msgId && item.type === "bookmark"));
       await chrome.storage.local.set({ [STORAGE_KEYS.savedItems]: state.savedItems });
-      btn.classList.remove("bds-bookmark-btn--active");
+      safeRemoveClass(btn, "bds-bookmark-btn--active");
       const svg = btn.querySelector("svg");
       if (svg) svg.setAttribute("fill", "none");
       btn.title = i18n.t('savedItems.bookmarkThis');
@@ -1566,7 +1909,7 @@ function injectBookmarkButton(node) {
         conversationUrl: conversationUrl,
       });
       await chrome.storage.local.set({ [STORAGE_KEYS.savedItems]: state.savedItems });
-      btn.classList.add("bds-bookmark-btn--active");
+      safeAddClass(btn, "bds-bookmark-btn--active");
       const svg = btn.querySelector("svg");
       if (svg) svg.setAttribute("fill", "currentColor");
       btn.title = i18n.t('savedItems.removeBookmark');
@@ -1574,7 +1917,7 @@ function injectBookmarkButton(node) {
     }
   });
 
-  container.appendChild(btn);
+  safeAppendChild(container, btn);
   stateData.bookmarkInjected = true;
 }
 

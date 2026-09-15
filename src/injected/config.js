@@ -59,7 +59,29 @@ export function normalizeConfig(config) {
     projectRagLimit: Number(config.projectRagLimit) || 5,
     injectSystemDateTime: Boolean(config.injectSystemDateTime),
     deepResearch: normalizeDeepResearch(config.deepResearch),
+    deepCode: normalizeDeepCode(config.deepCode),
     mcpToolSchemas,
+    mcpInlineMaxChars: Number(config.mcpInlineMaxChars) || 8000,
+    modelInputLimits: config.modelInputLimits || {},
+  };
+}
+
+export function normalizeDeepCode(raw) {
+  if (!raw || typeof raw !== "object") {
+    return { enabled: false, activeDirectory: null, manualPath: "", pendingReport: null, fileTree: "" };
+  }
+  return {
+    enabled: Boolean(raw.enabled),
+    activeDirectory: String(raw.activeDirectory || "").trim(),
+    manualPath: String(raw.manualPath || "").trim(),
+    fileTree: String(raw.fileTree || "").trim(),
+    pendingReport: raw.pendingReport && typeof raw.pendingReport === "object"
+      ? {
+          cwd: String(raw.pendingReport.cwd || "").trim(),
+          sessionId: String(raw.pendingReport.sessionId || "").trim(),
+          report: String(raw.pendingReport.report || "").trim(),
+        }
+      : null,
   };
 }
 

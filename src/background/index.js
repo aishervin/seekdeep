@@ -5,6 +5,7 @@ import {
   GITHUB_COMMITS_PAGE_SIZE,
   normalizeGitHubCommitCount,
 } from "../lib/github-commits.js";
+import { devLog } from "../lib/dev-log.js";
 
 export {
   DEFAULT_GITHUB_COMMIT_COUNT,
@@ -13,8 +14,50 @@ export {
 
 export { fetchPageContent };
 
+export {
+  mcpFetch,
+  mcpEnsureInitialized,
+  mcpJsonRpcRequest,
+  listMcpTools,
+  mcpCallTool,
+  mcpClearInit,
+  MCP_REQUEST_TIMEOUT_MS,
+};
+
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  if (!message || !message.type) return false;
+  if (message.type === "PING_HARNESS") {
+    const baseUrl = message.baseUrl || "http://127.0.0.1:3080";
+    // Check if dedicated Cordis bridge plugin is active (Mode B)
+    fetch(`${baseUrl}/api/better-deepseek/ping`)
+      .then((res) => {
+        if (res.ok) {
+          return res.json()
+            .then((d) => ({ ok: true, available: true, mode: "plugin", pluginInfo: d }))
+            .catch(() => ({ ok: true, available: true, mode: "plugin" }));
+        }
+        throw new Error("Plugin ping returned " + res.status);
+      })
+      .catch(() => {
+        // Fallback to standard host.describe (Mode A)
+        return fetch(`${baseUrl}/api/host.describe`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ type: "client-request", rpcId: "ping", method: "host.describe", payload: {} }),
+        })
+          .then((res) => res.json())
+          .then((data) => ({ ok: true, available: data.result?.ok ?? true, mode: "native" }))
+          .catch((err) => ({ ok: false, available: false, error: err.message }));
+      })
+      .then((data) => sendResponse(data));
+    return true;
+  }
+
+  if (message.type === "EXECUTE_HARNESS_TASK") {
+    handleHarnessTaskExecution(message.payload)
+      .then((res) => sendResponse(res))
+      .catch((err) => sendResponse({ ok: false, error: String(err?.message || err) }));
+    return true;
+  }
 
   if (message.type === "bds-get-youtube-transcript") {
     fetchTranscript(message.videoId)
@@ -409,6 +452,24 @@ async function fetchPageContent(url, options = {}) {
   if (!url) throw new Error("No URL provided.");
   const safeOptions = options && typeof options === "object" ? options : {};
 
+  // Optional hard budget (ms). Uses the same AbortController pattern as
+  // mcpFetch so a hanging host (e.g. a blackholed search provider) fails
+  // fast instead of stalling the caller's provider chain for minutes (#148).
+  const timeoutMs =
+    Number.isFinite(safeOptions.timeoutMs) && Number(safeOptions.timeoutMs) > 0
+      ? Number(safeOptions.timeoutMs)
+      : 0;
+  const ac = timeoutMs > 0 ? new AbortController() : null;
+  const timer = ac
+    ? setTimeout(
+        () =>
+          ac.abort(
+            new DOMException(`Request timed out after ${timeoutMs}ms`, "TimeoutError")
+          ),
+        timeoutMs
+      )
+    : null;
+
   const fetchOptions = {
     method: safeOptions.method || "GET",
     headers: safeOptions.headers || {},
@@ -427,29 +488,44 @@ async function fetchPageContent(url, options = {}) {
   if (safeOptions.redirect) {
     fetchOptions.redirect = safeOptions.redirect;
   }
-
-  const resp = await fetch(url, fetchOptions);
-  if (!resp.ok) {
-    const error = new Error(`Server returned ${resp.status} for ${url}`);
-    error.status = resp.status;
-    throw error;
+  if (ac) {
+    fetchOptions.signal = ac.signal;
   }
 
-  const buffer = await resp.arrayBuffer();
-
-  let charset = detectCharsetFromHeaders(resp);
-  if (!charset) {
-    charset = detectCharsetFromHtml(buffer);
-  }
-
-  let html;
   try {
-    html = new TextDecoder(charset || "utf-8", { fatal: false }).decode(buffer);
-  } catch {
-    html = new TextDecoder("utf-8", { fatal: false }).decode(buffer);
-  }
+    let resp;
+    let buffer;
+    try {
+      resp = await fetch(url, fetchOptions);
+      if (!resp.ok) {
+        const error = new Error(`Server returned ${resp.status} for ${url}`);
+        error.status = resp.status;
+        throw error;
+      }
+      buffer = await resp.arrayBuffer();
+    } catch (err) {
+      if (ac && ac.signal.aborted) {
+        throw new Error(`Request timed out after ${timeoutMs}ms`);
+      }
+      throw err;
+    }
 
-  return { html, status: resp.status };
+    let charset = detectCharsetFromHeaders(resp);
+    if (!charset) {
+      charset = detectCharsetFromHtml(buffer);
+    }
+
+    let html;
+    try {
+      html = new TextDecoder(charset || "utf-8", { fatal: false }).decode(buffer);
+    } catch {
+      html = new TextDecoder("utf-8", { fatal: false }).decode(buffer);
+    }
+
+    return { html, status: resp.status };
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 
 // Open chat.deepseek.com when the extension toolbar icon is clicked
@@ -520,79 +596,439 @@ async function handleLanguageReset() {
 
 // ── MCP JSON-RPC Helpers ──
 
+const MCP_REQUEST_TIMEOUT_MS = 30_000;
+
+/**
+ * Cache of MCP initialization state per (serverUrl, apiKey) pair.
+ * Stores a promise for the init handshake, the optional session ID,
+ * and the detected auth method.
+ * @type {Map<string, { initialized: Promise<void>, sessionId: string | null, authMethod: string }>}
+ */
 const mcpInitCache = new Map();
 
-function mcpHeaders(apiKey) {
+/** Build headers for an MCP JSON-RPC request.
+
+Supports three auth methods:
+- "bearer" — sends `Authorization: Bearer <apiKey>` (default, backward-compatible)
+- "x-api-key" — sends `X-API-Key: <apiKey>`
+- "none" / undefined — no auth header (URL-based `?apiKey=` handles auth)
+*/
+function mcpHeaders(apiKey, sessionId, authMethod = "bearer") {
   const h = { "Content-Type": "application/json", Accept: "application/json, text/event-stream" };
-  if (apiKey) { h["x-api-key"] = apiKey; h["Authorization"] = `Bearer ${apiKey}`; }
+  if (apiKey && authMethod === "bearer") {
+    h["Authorization"] = `Bearer ${apiKey}`;
+  } else if (apiKey && authMethod === "x-api-key") {
+    h["X-API-Key"] = apiKey;
+  }
+  if (sessionId) {
+    h["Mcp-Session-Id"] = sessionId;
+  }
   return h;
 }
 
-/** Send a JSON-RPC request and parse JSON or SSE response */
-async function mcpFetch(serverUrl, bodyObj, apiKey) {
-  const resp = await fetch(serverUrl, {
-    method: "POST",
-    headers: mcpHeaders(apiKey),
-    body: JSON.stringify(bodyObj),
-  });
-  if (!resp.ok) {
-    let detail = "";
-    try { detail = await resp.text(); } catch (e) {}
-    throw new Error(
-      `MCP server returned ${resp.status}${detail ? ": " + detail.slice(0, 300) : ""}`
-    );
-  }
-  const ct = (resp.headers.get("content-type") || "").toLowerCase();
-  if (ct.includes("text/event-stream")) {
-    const text = await resp.text();
-    let lastResult = null;
-    for (const line of text.split("\n")) {
-      if (line.startsWith("data: ")) {
-        const raw = line.slice(6).trim();
-        if (raw === "[DONE]") continue;
-        try {
-          const parsed = JSON.parse(raw);
-          if (parsed.error) throw new Error(parsed.error.message || JSON.stringify(parsed.error));
-          if (parsed.result !== undefined) lastResult = parsed.result;
-        } catch (e) {
-          if (e instanceof SyntaxError) continue;
-          throw e;
+/**
+ * Send a single JSON-RPC request and parse the response.
+ *
+ * Handles JSON and SSE (text/event-stream) response content types.
+ * Reads the Mcp-Session-Id response header for session tracking and
+ * returns it along with the parsed result.
+ *
+ * On HTTP 404 / 400 the caller is expected to retry after
+ * re-initialization (session expiry). This function raises on
+ * all other errors.
+ */
+async function mcpFetch(serverUrl, bodyObj, apiKey, { sessionId, signal, authMethod } = {}) {
+  const startedAt = Date.now();
+  const methodName = bodyObj?.method || "?";
+  devLog("MCP", `>> ${methodName} @ ${serverUrl} [auth=${authMethod}, sessionId=${sessionId}]`);
+
+  const ac = !signal ? new AbortController() : null;
+  const resolvedSignal = signal || ac.signal;
+  const timer = ac ? setTimeout(() => ac.abort(new DOMException("MCP server did not respond within 30s", "TimeoutError")), MCP_REQUEST_TIMEOUT_MS) : null;
+  try {
+    const resp = await fetch(serverUrl, {
+      method: "POST",
+      headers: mcpHeaders(apiKey, sessionId, authMethod),
+      body: JSON.stringify(bodyObj),
+      signal: resolvedSignal,
+    });
+    if (!resp.ok) {
+      let detail = "";
+      try { detail = await resp.text(); } catch (e) { }
+      throw Object.assign(
+        new Error(`MCP server returned ${resp.status}${detail ? ": " + detail.slice(0, 300) : ""}`),
+        { status: resp.status },
+      );
+    }
+
+    const responseSessionId = resp.headers.get("Mcp-Session-Id") || null;
+    devLog("MCP", `<< ${methodName} → ${resp.status} (${Date.now() - startedAt}ms) sessionId=${responseSessionId} ct=${(resp.headers.get("content-type") || "").toLowerCase()}`);
+
+    const ct = (resp.headers.get("content-type") || "").toLowerCase();
+    let result;
+    if (ct.includes("text/event-stream")) {
+      const text = await resp.text();
+      let lastResult = null;
+      for (const line of text.split("\n")) {
+        if (line.startsWith("data: ")) {
+          const raw = line.slice(6).trim();
+          if (raw === "[DONE]") continue;
+          try {
+            const parsed = JSON.parse(raw);
+            if (parsed.error) throw new Error(parsed.error.message || JSON.stringify(parsed.error));
+            if (parsed.result !== undefined) lastResult = parsed.result;
+          } catch (e) {
+            if (e instanceof SyntaxError) continue;
+            throw e;
+          }
         }
       }
+      result = lastResult;
+    } else {
+      const text = await resp.text();
+      if (text.trim()) {
+        const data = JSON.parse(text);
+        if (data.error) throw new Error(data.error.message || JSON.stringify(data.error));
+        result = data.result;
+      } else {
+        result = null;
+      }
     }
-    return lastResult;
+
+    return { result, sessionId: responseSessionId };
+  } catch (err) {
+    console.error(`[BDS:MCP] !! ${methodName} FAILED after ${Date.now() - startedAt}ms:`, err.name, err.message);
+    if (err.status) console.error(`[BDS:MCP] !! status=${err.status}`);
+    if (err.name === "AbortError") {
+      throw new Error("MCP server did not respond within 30s");
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
   }
-  const data = await resp.json();
-  if (data.error) throw new Error(data.error.message || JSON.stringify(data.error));
-  return data.result;
 }
 
-/** Ensure the session is initialized per MCP spec (cached per (url,apiKey)) */
+/**
+ * Ensure the session is initialized per MCP spec (cached per (url,apiKey)).
+ * Auto-detects the auth method by trying:
+ *   1. Authorization: Bearer <apiKey>
+ *   2. X-API-Key: <apiKey>
+ *   3. No auth header (for URL-based ?apiKey= or public servers)
+ * The working method is cached so subsequent calls skip detection.
+ * Returns { sessionId, authMethod }.
+ */
 async function mcpEnsureInitialized(serverUrl, apiKey) {
   const key = `${serverUrl}|${apiKey}`;
-  if (mcpInitCache.has(key)) return mcpInitCache.get(key);
-  const promise = (async () => {
-    await mcpFetch(serverUrl, {
-      jsonrpc: "2.0", id: 1, method: "initialize",
-      params: { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "better-deepseek", version: "0.1.11" } },
-    }, apiKey);
-    mcpFetch(serverUrl, { jsonrpc: "2.0", method: "notifications/initialized" }, apiKey).catch(() => {});
-  })().catch(err => { mcpInitCache.delete(key); throw err; });
-  mcpInitCache.set(key, promise);
-  return promise;
+  const cached = mcpInitCache.get(key);
+  if (cached) {
+    await cached.initialized;
+    return { sessionId: cached.sessionId, authMethod: cached.authMethod };
+  }
+
+  const entry = { initialized: null, sessionId: null, authMethod: "bearer" };
+  mcpInitCache.set(key, entry);
+
+  const initBody = {
+    jsonrpc: "2.0", id: 1, method: "initialize",
+    params: { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "better-deepseek", version: "0.1.13" } },
+  };
+
+  entry.initialized = (async () => {
+    const attempts = [];
+    if (apiKey) {
+      attempts.push({ authMethod: "bearer", key: apiKey });
+      attempts.push({ authMethod: "x-api-key", key: apiKey });
+    }
+    attempts.push({ authMethod: "none", key: "" });
+
+    let lastError = null;
+    let result = null;
+    let usedMethod = "none";
+
+    for (const attempt of attempts) {
+      devLog("MCP", `Trying init with authMethod=${attempt.authMethod}`);
+      try {
+        result = await mcpFetch(serverUrl, initBody, attempt.key, { authMethod: attempt.authMethod });
+        usedMethod = attempt.authMethod;
+        lastError = null;
+        devLog("MCP", `Init succeeded with authMethod=${usedMethod}, sessionId=${result.sessionId}`);
+        break;
+      } catch (err) {
+        if (err.status === 401 || err.status === 403) {
+          devLog("MCP", `Init rejected (${err.status}) with authMethod=${attempt.authMethod}, trying next`);
+          lastError = err;
+          continue;
+        }
+        throw err;
+      }
+    }
+
+    if (lastError) {
+      console.error(`[BDS:MCP] All auth methods failed for ${serverUrl}`);
+      mcpInitCache.delete(key);
+      throw lastError;
+    }
+
+    entry.sessionId = result.sessionId;
+    entry.authMethod = usedMethod;
+
+    mcpFetch(serverUrl, { jsonrpc: "2.0", method: "notifications/initialized" }, apiKey, { sessionId: result.sessionId, authMethod: usedMethod }).catch(() => { });
+  })().catch(err => {
+    mcpInitCache.delete(key);
+    throw err;
+  });
+
+  await entry.initialized;
+  return { sessionId: entry.sessionId, authMethod: entry.authMethod };
+}
+
+/** Clear the cached init state for a server, e.g. on session expiry. */
+function mcpClearInit(serverUrl, apiKey) {
+  const key = `${serverUrl}|${apiKey}`;
+  mcpInitCache.delete(key);
 }
 
 let mcpReqId = 1;
-async function mcpJsonRpcRequest(serverUrl, method, params = {}, apiKey = "") {
-  await mcpEnsureInitialized(serverUrl, apiKey);
+async function mcpJsonRpcRequest(serverUrl, method, params = {}, apiKey = "", signal) {
+  const { sessionId, authMethod } = await mcpEnsureInitialized(serverUrl, apiKey);
   const id = ++mcpReqId;
-  return mcpFetch(serverUrl, { jsonrpc: "2.0", id, method, params }, apiKey);
+  const { result } = await mcpFetch(serverUrl, { jsonrpc: "2.0", id, method, params }, apiKey, { sessionId, signal, authMethod });
+  return result;
 }
 
 async function listMcpTools(serverUrl, apiKey = "") {
-  return mcpJsonRpcRequest(serverUrl, "tools/list", {}, apiKey);
+  try {
+    return await mcpJsonRpcRequest(serverUrl, "tools/list", {}, apiKey);
+  } catch (err) {
+    if (err.status === 404 || err.status === 400) {
+      mcpClearInit(serverUrl, apiKey);
+      return await mcpJsonRpcRequest(serverUrl, "tools/list", {}, apiKey);
+    }
+    throw err;
+  }
 }
 
 async function mcpCallTool(serverUrl, toolName, args = {}, apiKey = "") {
-  return mcpJsonRpcRequest(serverUrl, "tools/call", { name: toolName, arguments: args }, apiKey);
+  try {
+    return await mcpJsonRpcRequest(serverUrl, "tools/call", { name: toolName, arguments: args }, apiKey);
+  } catch (err) {
+    if (err.status === 404 || err.status === 400) {
+      mcpClearInit(serverUrl, apiKey);
+      return await mcpJsonRpcRequest(serverUrl, "tools/call", { name: toolName, arguments: args }, apiKey);
+    }
+    throw err;
+  }
 }
+
+function pathIsAbsolute(p) {
+  if (!p || typeof p !== "string") return false;
+  return p.startsWith("/") || p.startsWith("\\") || /^[a-zA-Z]:[/\\]/.test(p);
+}
+
+/**
+ * Handle execution of Harness tasks by calling 127.0.0.1:3080 ApiProxy endpoints.
+ */
+async function handleHarnessTaskExecution(payload = {}) {
+  const baseUrl = String(payload.baseUrl || "http://127.0.0.1:3080").replace(/\/+$/, "");
+
+  // If only querying workspaces
+  if (payload.queryWorkspacesOnly) {
+    try {
+      const wsRes = await fetch(`${baseUrl}/api/workspace.list`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          type: "client-request",
+          rpcId: `ws-list-${Date.now()}`,
+          method: "workspace.list",
+          payload: {},
+        }),
+      });
+      if (wsRes.ok) {
+        const wsData = await wsRes.json();
+        const list = wsData?.result?.value?.list || wsData?.result?.list || wsData?.list || [];
+        const fn = String(payload.folderName || "").toLowerCase().trim();
+        const match = list.find((w) => {
+          const name = String(w.name || "").toLowerCase();
+          const p = String(w.path || w.cwd || w.uri || "").toLowerCase().replace(/\\/g, "/");
+          return name === fn || p.endsWith(`/${fn}`) || p.endsWith(`\\${fn}`) || p === fn;
+        });
+        if (match) {
+          const resPath = match.path || match.cwd || match.uri || "";
+          return { ok: true, matchedPath: resPath };
+        }
+      }
+    } catch (err) {
+      console.warn(`[BDS] Workspace list query failed:`, err);
+    }
+    return { ok: false, matchedPath: "" };
+  }
+
+  const rawCwd = String(payload.cwd || "").trim();
+  const workspaceId = String(payload.workspaceId || "").trim();
+  const promptText = String(payload.prompt || payload.task || "").trim();
+
+  if (!rawCwd && !workspaceId) {
+    throw new Error("Missing required cwd or workspaceId for Harness session creation.");
+  }
+
+  // Validate absolute path if cwd is provided
+  let cwd = rawCwd;
+  if (cwd && !pathIsAbsolute(cwd)) {
+    return {
+      ok: false,
+      error: `Absolute path is required for Harness (e.g. A:/Users/Edige/GitHub/asistan). Relative path "${cwd}" is forbidden.`,
+      debug: {
+        providedCwd: cwd,
+        recommendation: "Please enter full absolute directory path in the path field.",
+      },
+    };
+  }
+
+  // 1. Create Session via POST /api/session.create
+  const createPayload = workspaceId ? { workspaceId } : { cwd };
+  const reqBody = {
+    type: "client-request",
+    rpcId: `bd-create-${Date.now()}`,
+    method: "session.create",
+    payload: createPayload,
+  };
+
+  const targetUrl = `${baseUrl}/api/better-deepseek/session.create`;
+  let createRes = null;
+  let rawBodyText = "";
+  let resHeaders = {};
+
+  devLog(`[BDS:Harness] Sending session.create to ${targetUrl}`, reqBody);
+
+  try {
+    createRes = await fetch(targetUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Accept": "application/json" },
+      body: JSON.stringify(reqBody),
+    });
+
+    resHeaders = {};
+    createRes.headers.forEach((v, k) => { resHeaders[k] = v; });
+    rawBodyText = await createRes.text().catch(() => "");
+  } catch (netErr) {
+    console.error(`[BDS:Harness] Network error for ${targetUrl}:`, netErr);
+  }
+
+  if (!createRes) {
+    return {
+      ok: false,
+      error: `Network Error: Cannot connect to Harness server at ${baseUrl}. Ensure local Harness is running on 127.0.0.1:3080.`,
+      debug: {
+        url: targetUrl,
+        requestPayload: reqBody,
+      },
+    };
+  }
+
+  console.error(`[BDS:Harness] session.create response HTTP ${createRes.status}`, {
+    url: targetUrl,
+    status: createRes.status,
+    statusText: createRes.statusText,
+    headers: resHeaders,
+    body: rawBodyText,
+  });
+
+  if (!createRes.ok) {
+    let messageDetail = "";
+    try {
+      const errJson = JSON.parse(rawBodyText);
+      messageDetail = errJson.result?.error?.message || errJson.message || errJson.error || rawBodyText;
+    } catch (e) {
+      messageDetail = rawBodyText || createRes.statusText;
+    }
+    return {
+      ok: false,
+      error: `Harness session.create HTTP ${createRes.status} (${createRes.statusText}): ${messageDetail}`,
+      debug: {
+        url: targetUrl,
+        status: createRes.status,
+        statusText: createRes.statusText,
+        headers: resHeaders,
+        requestPayload: reqBody,
+        responseBody: rawBodyText,
+      },
+    };
+  }
+
+  let createData;
+  try {
+    createData = JSON.parse(rawBodyText);
+  } catch (pErr) {
+    return {
+      ok: false,
+      error: `Failed to parse JSON response from session.create: ${rawBodyText}`,
+      debug: { url: targetUrl, responseBody: rawBodyText },
+    };
+  }
+
+  if (!createData.result || !createData.result.ok || !createData.result.value?.sessionId) {
+    const errMsg = createData.result?.error?.message || "Failed to create session on Harness (missing sessionId).";
+    return {
+      ok: false,
+      error: errMsg,
+      debug: { url: targetUrl, responseData: createData },
+    };
+  }
+
+  const sessionId = createData.result.value.sessionId;
+
+  // 2. Prompt Session via POST /api/better-deepseek/session.prompt
+  if (promptText) {
+    const promptReqBody = {
+      type: "client-request",
+      rpcId: `bd-prompt-${Date.now()}`,
+      method: "session.prompt",
+      payload: {
+        sessionId,
+        text: promptText,
+        mode: "queue",
+        content: [{ type: "text", text: promptText }],
+      },
+    };
+
+    const pUrl = `${baseUrl}/api/better-deepseek/session.prompt`;
+    let promptRes = null;
+    let pText = "";
+
+    try {
+      promptRes = await fetch(pUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "Accept": "application/json" },
+        body: JSON.stringify(promptReqBody),
+      });
+      pText = await promptRes.text().catch(() => "");
+    } catch (err) {
+      console.error(`[BDS:Harness] Network error for ${pUrl}:`, err);
+    }
+
+    if (!promptRes || !promptRes.ok) {
+      return {
+        ok: false,
+        error: `Harness session.prompt HTTP ${promptRes?.status || "Error"}: ${pText}`,
+        debug: {
+          url: pUrl,
+          status: promptRes?.status,
+          statusText: promptRes?.statusText,
+          requestPayload: promptReqBody,
+          responseBody: pText,
+        },
+      };
+    }
+  }
+
+  return { ok: true, sessionId, baseUrl };
+}
+
+// ── MV3 Service Worker Keepalive ──
+chrome.runtime.onSuspend?.addListener(() => {
+  console.warn("[BDS] Service worker suspending!");
+});
+chrome.runtime.onSuspendCanceled?.addListener(() => {
+  console.log("[BDS] Service worker suspend cancelled");
+});

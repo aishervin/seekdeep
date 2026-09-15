@@ -10,6 +10,7 @@
   } from "../../lib/constants.js";
   import { getActiveProject, updateProject } from "../project-manager.js";
   import { t, i18n, availableLocaleCodes } from "../../lib/i18n.svelte.js";
+  import { SEARCH_PROVIDER_CATALOG } from "../files/search-reader.js";
   import { CSS_PRESETS } from "../../lib/constants.js";
   import { openNativeFilePicker } from "../files/native-file-input.js";
   import { encryptData, decryptData } from "../../lib/utils/crypto.js";
@@ -75,6 +76,8 @@
   let deepResearchContextGuardEnabled = $state(Boolean(appState.settings.deepResearchContextGuardEnabled));
   let deepResearchContextLimitTokens = $state(Number(appState.settings.deepResearchContextLimitTokens) || 128000);
   let deepResearchContextStopPercent = $state(Number(appState.settings.deepResearchContextStopPercent) || 70);
+  let searchProviderRows = $state(buildSearchProviderRows(appState.settings.searchProviders));
+  let activeSearchProviderCount = $derived(searchProviderRows.filter((row) => row.enabled).length);
   let locale = $state(appState.settings.locale || availableLocaleCodes[0] || "en");
   let syncLocale = $state(Boolean(appState.settings.syncLocale));
   let customCSS = $state(appState.settings.customCSS || "");
@@ -106,6 +109,7 @@
   let mcpEditorIsNew = $state(false);
   let mcpTestingIndex = $state(-1);
   let mcpServers = $state([...appState.mcpServers]);
+  let mcpInlineMaxChars = $state(Number(appState.settings.mcpInlineMaxChars) || 8000);
   let disableTipBox = $state(Boolean(appState.settings.disableTipBox));
   let advancedSearchQuery = $state("");
   let autocompleteSelectedIndex = $state(-1);
@@ -139,12 +143,69 @@
     { key: "skills", label: t('drawer.sectionSkills') },
     { key: "characters", label: t('drawer.sectionCharacters') },
     { key: "memories", label: t('drawer.sectionMemories') },
+    { key: "mcpServers", label: t('drawer.sectionMcpServers') },
+    { key: "cssSnippets", label: t('drawer.sectionCssSnippets') },
     { key: "projects", label: t('drawer.sectionProjects') },
     { key: "projectFiles", label: t('drawer.sectionProjectFiles') },
     { key: "chatTags", label: t('drawer.sectionChatTags') },
     { key: "savedItems", label: t('drawer.sectionSavedItems') },
   ];
   let selectedSections = $state(new Set(EXPORT_SECTIONS.map(s => s.key)));
+
+  function normalizeSearchProvidersSetting(raw) {
+    const known = new Set(SEARCH_PROVIDER_CATALOG.map((provider) => provider.id));
+    const seen = new Set();
+    const enabled = [];
+    if (Array.isArray(raw)) {
+      for (const id of raw) {
+        const key = String(id);
+        if (known.has(key) && !seen.has(key)) {
+          enabled.push(key);
+          seen.add(key);
+        }
+      }
+    }
+    return enabled;
+  }
+
+  function buildSearchProviderRows(raw) {
+    // Enabled providers keep their configured order; disabled ones follow in
+    // canonical catalog order so every provider stays visible and toggleable.
+    const enabled = normalizeSearchProvidersSetting(raw);
+    return SEARCH_PROVIDER_CATALOG.map((provider) => ({
+      id: provider.id,
+      labelKey: provider.labelKey,
+      name: provider.name,
+      enabled: enabled.includes(provider.id),
+    })).sort((a, b) => {
+      const ai = enabled.indexOf(a.id);
+      const bi = enabled.indexOf(b.id);
+      if (ai !== -1 && bi !== -1) return ai - bi;
+      if (ai !== -1) return -1;
+      if (bi !== -1) return 1;
+      return 0;
+    });
+  }
+
+  function enabledSearchProviderIds() {
+    return searchProviderRows.filter((row) => row.enabled).map((row) => row.id);
+  }
+
+  function toggleSearchProvider(row) {
+    if (row.enabled && activeSearchProviderCount <= 1) return;
+    searchProviderRows = searchProviderRows.map((candidate) =>
+      candidate.id === row.id ? { ...candidate, enabled: !candidate.enabled } : candidate
+    );
+  }
+
+  function moveSearchProvider(index, delta) {
+    const target = index + delta;
+    if (target < 0 || target >= searchProviderRows.length) return;
+    if (searchProviderRows[target].enabled !== searchProviderRows[index].enabled) return;
+    const next = [...searchProviderRows];
+    [next[index], next[target]] = [next[target], next[index]];
+    searchProviderRows = next;
+  }
 
   function captureFormSnapshot() {
     return JSON.stringify({
@@ -157,6 +218,8 @@
       tokenPriceDisplay, showTimestamps, projectRagEnabled, projectRagLimit,
       processGitignoreOnUpload, injectSystemDateTime, skipDeletionConfirmation,
       deepResearchDeepFetch,
+      searchProviders: enabledSearchProviderIds(),
+      mcpInlineMaxChars,
       locale, syncLocale, collapseLongUserMessages,
       loadAllHistoryOnSession, customCSS, disableTipBox
     });
@@ -183,6 +246,18 @@
     showExportAllModal = false;
   }
 
+  /**
+   * Returns true when a chrome API call fails because the extension was
+   * reloaded/updated while the page tab was still open (orphaned content script).
+   * The user must reload the page to re-establish the extension context.
+   */
+  function isExtensionContextError(e) {
+    const msg = (e && e.message) ? e.message.toLowerCase() : "";
+    return msg.includes("extension context invalidated") ||
+           msg.includes("context invalidated") ||
+           msg.includes("cannot access");
+  }
+
   async function doExportAll() {
     if (exportEncrypt) {
       if (!exportPassword || exportPassword.length < 4) {
@@ -198,15 +273,27 @@
     isExporting = true;
 
     try {
+      // Strip migration-only flags from exported settings so they don't
+      // corrupt the version-upgrade logic on the destination device.
+      const settingsToExport = { ...appState.settings, githubToken: "" };
+      delete settingsToExport.systemPromptBackupDone;
+      delete settingsToExport.systemPromptTemplateVersion;
+      delete settingsToExport.downloadBehaviorVersion;
+      // customSystemPrompts is exported as its own top-level key so it can be
+      // imported independently; remove it from the settings blob to avoid
+      // double-importing when the settings section is selected.
+      delete settingsToExport.customSystemPrompts;
+
       const data = {
         version: 1,
         exportedAt: new Date().toISOString(),
-        settings: { ...appState.settings, githubToken: "" },
+        settings: settingsToExport,
         cssSnippets: appState.cssSnippets,
         customSystemPrompts: appState.settings.customSystemPrompts || [],
         skills: appState.skills,
         characters: appState.characters,
         memories: appState.memories,
+        mcpServers: appState.mcpServers,
         projects: appState.projects,
         projectFiles: appState.projectFiles,
         chatTags: appState.chatTags,
@@ -231,7 +318,11 @@
       closeExportAllModal();
       if (appState.ui) appState.ui.showToast(t('drawer.exportDone'));
     } catch (e) {
-      if (appState.ui) appState.ui.showToast(t('drawer.exportFailed'));
+      if (isExtensionContextError(e)) {
+        if (appState.ui) appState.ui.showToast(t('drawer.importContextError'), 8000);
+      } else {
+        if (appState.ui) appState.ui.showToast(t('drawer.exportFailed'));
+      }
     }
 
     isExporting = false;
@@ -251,9 +342,9 @@
   }
 
   async function handleImportAll(event) {
-    const file = event.target.files && event.target.files[0];
+    const input = event.target;
+    const file = input.files && input.files[0];
     if (!file) return;
-    event.target.value = "";
 
     try {
       const raw = await file.text();
@@ -272,6 +363,8 @@
       }
     } catch (e) {
       if (appState.ui) appState.ui.showToast(t('drawer.importParseError'));
+    } finally {
+      input.value = "";
     }
   }
 
@@ -306,64 +399,111 @@
     if (!importData) return;
     isImporting = true;
 
+    // Toast message is deferred until after the modal closes (finally block)
+    // so it is never hidden behind the overlay or cut off by its animation.
+    let pendingToast = null;
+    let pendingToastDuration = 2880;
+
     try {
       const d = importData;
 
+      const plain = (obj) => JSON.parse(JSON.stringify(obj ?? null));
+
       if (selectedSections.has("settings") && d.settings) {
         const oldToken = appState.settings.githubToken;
-        Object.assign(appState.settings, d.settings);
-        appState.settings.githubToken = oldToken;
-        await chrome.storage.local.set({ [STORAGE_KEYS.settings]: appState.settings });
-        if (d.cssSnippets) {
-          appState.cssSnippets = d.cssSnippets;
-          await chrome.storage.local.set({ [STORAGE_KEYS.cssSnippets]: appState.cssSnippets });
-        }
+        // Preserve migration flags from the destination device so that
+        // loadStateFromStorage()'s upgrade logic remains correct after reload.
+        const migrationsToKeep = {
+          systemPromptBackupDone: appState.settings.systemPromptBackupDone,
+          systemPromptTemplateVersion: appState.settings.systemPromptTemplateVersion,
+          downloadBehaviorVersion: appState.settings.downloadBehaviorVersion,
+        };
+        // Use a reactive spread (not Object.assign) so Svelte 5 tracks the change.
+        appState.settings = {
+          ...appState.settings,
+          ...d.settings,
+          ...migrationsToKeep,
+          githubToken: oldToken,
+          // customSystemPrompts is managed by its own section below; prevent
+          // the settings blob from silently overwriting it regardless of the
+          // user's section selection.
+          customSystemPrompts: appState.settings.customSystemPrompts,
+        };
+        await chrome.storage.local.set({ [STORAGE_KEYS.settings]: plain(appState.settings) });
       }
       if (selectedSections.has("customSystemPrompts") && d.customSystemPrompts) {
-        appState.settings.customSystemPrompts = d.customSystemPrompts;
-        await chrome.storage.local.set({ [STORAGE_KEYS.settings]: appState.settings });
+        appState.settings = {
+          ...appState.settings,
+          customSystemPrompts: plain(d.customSystemPrompts),
+        };
+        await chrome.storage.local.set({ [STORAGE_KEYS.settings]: plain(appState.settings) });
+      }
+      if (selectedSections.has("cssSnippets") && d.cssSnippets) {
+        appState.cssSnippets = plain(d.cssSnippets);
+        await chrome.storage.local.set({ [STORAGE_KEYS.cssSnippets]: appState.cssSnippets });
       }
       if (selectedSections.has("skills") && d.skills) {
-        appState.skills = d.skills;
+        appState.skills = plain(d.skills);
         await chrome.storage.local.set({ [STORAGE_KEYS.skills]: appState.skills });
       }
       if (selectedSections.has("characters") && d.characters) {
-        appState.characters = d.characters;
+        appState.characters = plain(d.characters);
         await chrome.storage.local.set({ [STORAGE_KEYS.characters]: appState.characters });
       }
       if (selectedSections.has("memories") && d.memories) {
-        appState.memories = d.memories;
+        appState.memories = plain(d.memories);
         await chrome.storage.local.set({ [STORAGE_KEYS.memories]: appState.memories });
       }
+      if (selectedSections.has("mcpServers") && d.mcpServers) {
+        appState.mcpServers = plain(d.mcpServers);
+        await chrome.storage.local.set({ [STORAGE_KEYS.mcpServers]: appState.mcpServers });
+      }
       if (selectedSections.has("projects") && d.projects) {
-        appState.projects = d.projects;
+        appState.projects = plain(d.projects);
         await chrome.storage.local.set({ [STORAGE_KEYS.projects]: appState.projects });
       }
       if (selectedSections.has("projectFiles") && d.projectFiles) {
-        appState.projectFiles = d.projectFiles;
+        appState.projectFiles = plain(d.projectFiles);
         await chrome.storage.local.set({ [STORAGE_KEYS.projectFiles]: appState.projectFiles });
       }
       if (selectedSections.has("chatTags") && d.chatTags) {
-        appState.chatTags = d.chatTags;
+        appState.chatTags = plain(d.chatTags);
         await chrome.storage.local.set({ [STORAGE_KEYS.chatTags]: appState.chatTags });
       }
       if (selectedSections.has("savedItems") && d.savedItems) {
-        appState.savedItems = d.savedItems;
+        appState.savedItems = plain(d.savedItems);
         await chrome.storage.local.set({ [STORAGE_KEYS.savedItems]: appState.savedItems });
       }
+
+      // Explicitly refresh the settings form so local $state variables
+      // reflect the newly imported values without requiring a page reload.
+      refresh();
 
       pushConfigToPage();
       onimportdata?.();
 
-      if (appState.ui) appState.ui.showToast(t('drawer.importDone'));
+      pendingToast = t('drawer.importDone');
     } catch (e) {
-      if (appState.ui) appState.ui.showToast(t('drawer.importFailed'));
+      console.error("[BDS] doImportAll error:", e);
+      if (isExtensionContextError(e)) {
+        pendingToast = t('drawer.importContextError');
+        pendingToastDuration = 8000;
+      } else {
+        pendingToast = t('drawer.importFailed');
+      }
     } finally {
       showImportSelectModal = false;
       resetImportState();
       isImporting = false;
     }
+
+    // Show feedback only after the modal is fully closed so the toast is
+    // never obscured by the overlay and the user always sees the result.
+    if (pendingToast && appState.ui) {
+      appState.ui.showToast(pendingToast, pendingToastDuration);
+    }
   }
+
 
   function closeImportPasswordModal() {
     showImportPasswordModal = false;
@@ -429,6 +569,8 @@
     ]},
     { key: 'subResearch', labelKey: 'settings.subResearch', settingKeys: [
       'settings.deepFetchPerSearch',
+      'settings.searchProviders', 'settings.searchProvider.ddgLite',
+      'settings.searchProvider.ddgHtml', 'settings.searchProvider.bing',
       'settings.contextGuardEnabled', 'settings.contextGuardLimit',
       'settings.contextGuardStopPercent',
     ]},
@@ -444,8 +586,8 @@
       'settings.customCSS', 'settings.cssPresets',
       'settings.saveAsSnippet', 'settings.manageSnippets',
     ]},
-    { key: 'subMcp', labelKey: 'MCP Servers', settingKeys: [
-      'MCP Server URLs',
+    { key: 'subMcp', labelKey: 'mcp.sectionTitle', settingKeys: [
+      'mcp.addServer', 'mcp.inlineMaxChars',
     ]},
     { key: 'subUtilities', labelKey: 'settings.subUtilities', settingKeys: [
       'apiPlayground.title', 'drawer.exportAll', 'drawer.importAll', 'settings.disableTipBox',
@@ -602,6 +744,7 @@
     projectRagEnabled = Boolean(appState.settings.projectRagEnabled);
     projectRagLimit = Number(appState.settings.projectRagLimit) || 5;
     deepResearchDeepFetch = Number(appState.settings.deepResearchDeepFetch) ?? 1;
+    searchProviderRows = buildSearchProviderRows(appState.settings.searchProviders);
     processGitignoreOnUpload = Boolean(appState.settings.processGitignoreOnUpload);
     injectSystemDateTime = Boolean(appState.settings.injectSystemDateTime);
     skipDeletionConfirmation = Boolean(appState.settings.skipDeletionConfirmation);
@@ -609,7 +752,9 @@
     syncLocale = Boolean(appState.settings.syncLocale);
     customCSS = appState.settings.customCSS || "";
     disableTipBox = Boolean(appState.settings.disableTipBox);
+    mcpInlineMaxChars = Number(appState.settings.mcpInlineMaxChars) || 8000;
     cssSnippets = [...appState.cssSnippets];
+    mcpServers = [...appState.mcpServers];
     if (snippetListRef) snippetListRef.refresh();
     chrome.storage.local.get("bds_locale_update_last_checked", (data) => {
       lastCheckedDate = data.bds_locale_update_last_checked || "";
@@ -835,6 +980,11 @@
     appState.settings.injectSystemDateTime = injectSystemDateTime;
     appState.settings.skipDeletionConfirmation = skipDeletionConfirmation;
     appState.settings.deepResearchDeepFetch = Math.max(0, Math.min(5, Math.round(Number(deepResearchDeepFetch) || 0)));
+    // Never persist an empty provider list — fall back to the full default order.
+    const enabledProviders = enabledSearchProviderIds();
+    appState.settings.searchProviders = enabledProviders.length > 0
+      ? enabledProviders
+      : SEARCH_PROVIDER_CATALOG.map((provider) => provider.id);
     appState.settings.deepResearchContextGuardEnabled = deepResearchContextGuardEnabled;
     appState.settings.deepResearchContextLimitTokens = Math.max(16000, Math.min(1000000, Math.round(Number(deepResearchContextLimitTokens) || 128000)));
     appState.settings.deepResearchContextStopPercent = Math.max(50, Math.min(95, Math.round(Number(deepResearchContextStopPercent) || 70)));
@@ -842,9 +992,10 @@
     appState.settings.syncLocale = syncLocale;
     appState.settings.customCSS = customCSS;
     appState.settings.disableTipBox = disableTipBox;
+    appState.settings.mcpInlineMaxChars = Math.max(500, Math.min(100000, Math.round(Number(mcpInlineMaxChars) || 8000)));
 
     await chrome.storage.local.set({
-      [STORAGE_KEYS.settings]: appState.settings,
+      [STORAGE_KEYS.settings]: JSON.parse(JSON.stringify(appState.settings)),
     });
     if (!syncLocale) {
       i18n.setLocale(locale);
@@ -972,7 +1123,7 @@
 
   async function deleteMcpServer(id) {
     if (!appState.settings?.skipDeletionConfirmation) {
-      if (!(await appState.ui.showConfirm(`Delete MCP server "${mcpServers.find(s => s.id === id)?.name}"?`))) return;
+      if (!(await appState.ui.showConfirm(t('mcp.deleteConfirm', { name: mcpServers.find(s => s.id === id)?.name })))) return;
     }
     mcpServers = mcpServers.filter(s => s.id !== id);
     const plainDelete = JSON.parse(JSON.stringify(mcpServers));
@@ -1008,10 +1159,10 @@
         await chrome.storage.local.set({ [STORAGE_KEYS.mcpServers]: plainTest });
         await discoverMcpToolSchemas();
         pushConfigToPage();
-        if (appState.ui) appState.ui.showToast(`Connected: ${tools.length} tools found`);
+        if (appState.ui) appState.ui.showToast(t('mcp.connected', { count: tools.length }));
       }
     } catch (err) {
-      if (appState.ui) appState.ui.showToast(`MCP test failed: ${err.message}`);
+      if (appState.ui) appState.ui.showToast(t('mcp.testFailed', { message: err.message }));
     }
     mcpTestingIndex = -1;
   }
@@ -1453,7 +1604,7 @@
         {#if !syncLocale}
           <div class="bds-toggle-row">
             <span class="bds-toggle-label">{t('settings.selectLanguage')}</span>
-            <select class="bds-select" bind:value={locale} style="width: 140px;">
+            <select class="bds-select" bind:value={locale} style="width: 140px; max-width: 100%; box-sizing: border-box;">
               {#each availableLocaleCodes as code}
                 <option value={code}>{i18n.getNativeName(code)}</option>
               {/each}
@@ -1462,11 +1613,11 @@
         {/if}
 
         <div class="bds-toggle-row" style="flex-direction: column; align-items: stretch; gap: 8px;">
-          <div style="display: flex; gap: 8px; width: 100%;">
-            <button type="button" class="bds-btn-outlined" style="flex: 1; font-size: 11px; padding: 6px 12px;" onclick={checkLanguageUpdates} disabled={updatingLanguages}>
+          <div class="bds-lang-btn-group">
+            <button type="button" class="bds-btn-outlined bds-lang-btn" onclick={checkLanguageUpdates} disabled={updatingLanguages}>
               {updatingLanguages ? t('common.working') : t('settings.checkUpdates')}
             </button>
-            <button type="button" class="bds-btn-outlined" style="flex: 1; font-size: 11px; padding: 6px 12px; border-color: rgba(239, 68, 68, 0.3); color: rgba(239, 68, 68, 0.8);" onclick={resetLanguageFactory}>
+            <button type="button" class="bds-btn-outlined bds-lang-btn bds-lang-reset-btn" onclick={resetLanguageFactory}>
               {t('settings.resetFactory')}
             </button>
           </div>
@@ -1674,6 +1825,44 @@
           <p style="font-size: 10px; opacity: 0.5; margin: 0;">
             How many top search results Deep Research opens and adds as page evidence for each search step. Higher values improve source detail but spend context fast and may stop long runs earlier. Use 0 for results only, 1 for long research, 3+ for short high-detail runs.
           </p>
+        </div>
+
+        <div class="bds-toggle-row" style="flex-direction: column; align-items: flex-start; gap: 6px;">
+          <span class="bds-toggle-label">{t('settings.searchProviders')}</span>
+          <div class="bds-search-provider-list" role="list">
+            {#each searchProviderRows as row, index (row.id)}
+              <div class="bds-search-provider-row" role="listitem">
+                <label class="bds-search-provider-label">
+                  <input
+                    type="checkbox"
+                    checked={row.enabled}
+                    disabled={row.enabled && activeSearchProviderCount <= 1}
+                    onchange={() => toggleSearchProvider(row)}
+                  />
+                  <span>{t(row.labelKey)}</span>
+                </label>
+                <span class="bds-search-provider-controls">
+                  <button
+                    type="button"
+                    class="bds-search-provider-move"
+                    aria-label={t('settings.providerMoveUp')}
+                    title={t('settings.providerMoveUp')}
+                    disabled={index === 0 || searchProviderRows[index - 1].enabled !== row.enabled}
+                    onclick={() => moveSearchProvider(index, -1)}
+                  >↑</button>
+                  <button
+                    type="button"
+                    class="bds-search-provider-move"
+                    aria-label={t('settings.providerMoveDown')}
+                    title={t('settings.providerMoveDown')}
+                    disabled={index === searchProviderRows.length - 1 || searchProviderRows[index + 1].enabled !== row.enabled}
+                    onclick={() => moveSearchProvider(index, 1)}
+                  >↓</button>
+                </span>
+              </div>
+            {/each}
+          </div>
+          <p style="font-size: 10px; opacity: 0.5; margin: 0;">{t('settings.searchProvidersHint')}</p>
         </div>
 
         <div class="bds-toggle-row" style="flex-direction: column; align-items: flex-start; gap: 6px;">
@@ -1886,7 +2075,7 @@
 
     {#if isSectionMatch('subMcp')}
     <button type="button" class="bds-sub-toggle" class:open={subMcpOpen} onclick={() => subMcpOpen = !subMcpOpen} aria-expanded={subMcpOpen}>
-      MCP Servers
+      {t('mcp.sectionTitle')}
       <span class="bds-chevron">
         <svg width="12" height="12" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
           <path d="M4 6L8 10L12 6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
@@ -1895,26 +2084,37 @@
     </button>
     <div class="bds-sub-content" class:open={subMcpOpen}>
       <div class="bds-sub-inner">
-        <p style="font-size: 11px; opacity: 0.6; margin: 0 0 8px;">Add remote MCP (Model Context Protocol) servers. The AI can discover and invoke tools from these servers.</p>
+        <p style="font-size: 11px; opacity: 0.6; margin: 0 0 8px;">{t('mcp.description')}</p>
+        <p style="font-size: 10px; opacity: 0.5; margin: -4px 0 8px;">{t('mcp.transportNote')}</p>
         {#each mcpServers as server, i}
           <div class="bds-skill-item">
             <div class="bds-prompt-info">
               <span class="bds-prompt-name">{server.name}</span>
-              <span class="bds-prompt-status">{server.serverUrl} · {server.tools?.length || 0} tools</span>
+              <span class="bds-prompt-status">{server.serverUrl} · {t('mcp.toolsCount', { count: server.tools?.length || 0 })}</span>
             </div>
             <div class="bds-prompt-actions">
               <button class="bds-btn-outlined" style="font-size: 11px; padding: 4px 8px;" onclick={() => testMcpServer(i)} disabled={mcpTestingIndex === i}>
-                {mcpTestingIndex === i ? '...' : 'Test'}
+                {mcpTestingIndex === i ? t('mcp.testLoading') : t('mcp.test')}
               </button>
-              <button class="bds-btn-outlined" style="font-size: 11px; padding: 4px 8px;" onclick={() => openMcpEditor(server)}>Edit</button>
+              <button class="bds-btn-outlined" style="font-size: 11px; padding: 4px 8px;" onclick={() => openMcpEditor(server)}>{t('mcp.edit')}</button>
               <button class="bds-btn-danger" onclick={() => deleteMcpServer(server.id)}>×</button>
             </div>
           </div>
         {/each}
         <button class="bds-add-prompt-btn" onclick={() => openMcpEditor()}>
           <svg width="14" height="14" viewBox="0 0 16 16" fill="none" style="margin-right: 4px;"><path d="M8 3v10M3 8h10" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
-          Add MCP Server
+          {t('mcp.addServer')}
         </button>
+
+        <div class="bds-toggle-row" style="flex-direction: column; align-items: flex-start; gap: 6px; margin-top: 12px;">
+          <div style="display: flex; align-items: center; justify-content: space-between; width: 100%; gap: 12px; min-width: 0; box-sizing: border-box;">
+            <span class="bds-toggle-label">{t('mcp.inlineMaxChars')}</span>
+            <input id="bds-mcp-inline-max-chars" type="number" min="500" max="100000" step="500" class="bds-input" style="width: 100px; flex-shrink: 0; box-sizing: border-box;" bind:value={mcpInlineMaxChars} />
+          </div>
+          <p style="font-size: 10px; opacity: 0.5; margin: 0; width: 100%; box-sizing: border-box;">
+            {t('mcp.inlineMaxCharsHint')}
+          </p>
+        </div>
       </div>
     </div>
     {/if}
@@ -2100,24 +2300,24 @@
   <div class="bds-modal-overlay">
     <div class="bds-modal">
       <div class="bds-modal-header">
-        <span>{mcpEditorIsNew ? 'Add MCP Server' : 'Edit MCP Server'}</span>
+        <span>{mcpEditorIsNew ? t('mcp.addModalTitle') : t('mcp.editModalTitle')}</span>
         <button class="bds-modal-close" onclick={closeMcpEditor}>×</button>
       </div>
       <div class="bds-modal-body">
         <div class="bds-field">
-          <label class="bds-label">Name</label>
-          <input type="text" class="bds-input" bind:value={mcpEditorName} placeholder="My MCP Server" />
+          <label class="bds-label">{t('mcp.nameLabel')}</label>
+          <input type="text" class="bds-input" bind:value={mcpEditorName} placeholder={t('mcp.namePlaceholder')} />
         </div>
         <div class="bds-field">
-          <label class="bds-label">Server URL</label>
-          <input type="url" class="bds-input" bind:value={mcpEditorUrl} placeholder="https://example.com/mcp" />
+          <label class="bds-label">{t('mcp.serverUrlLabel')}</label>
+          <input type="url" class="bds-input" bind:value={mcpEditorUrl} placeholder={t('mcp.serverUrlPlaceholder')} />
         </div>
         <div class="bds-field">
-          <label class="bds-label">API Key (optional)</label>
-          <input type="password" class="bds-input" bind:value={mcpEditorApiKey} placeholder="sk-..." />
+          <label class="bds-label">{t('mcp.apiKeyLabel')}</label>
+          <input type="password" class="bds-input" bind:value={mcpEditorApiKey} placeholder={t('mcp.apiKeyPlaceholder')} />
         </div>
         <div class="bds-toggle-row" style="padding: 0;">
-          <span class="bds-toggle-label">Enabled</span>
+          <span class="bds-toggle-label">{t('mcp.enabledLabel')}</span>
           <label class="bds-switch">
             <input type="checkbox" bind:checked={mcpEditorEnabled} />
             <span class="bds-switch-track"></span>
@@ -2125,8 +2325,8 @@
         </div>
       </div>
       <div class="bds-modal-footer">
-        <button class="bds-btn-outlined" onclick={closeMcpEditor}>Cancel</button>
-        <button class="bds-btn" onclick={saveMcpServer} disabled={!mcpEditorName.trim() || !mcpEditorUrl.trim()}>Save</button>
+        <button class="bds-btn-outlined" onclick={closeMcpEditor}>{t('mcp.cancel')}</button>
+        <button class="bds-btn" onclick={saveMcpServer} disabled={!mcpEditorName.trim() || !mcpEditorUrl.trim()}>{t('mcp.save')}</button>
       </div>
     </div>
   </div>
@@ -2172,6 +2372,15 @@
     font-weight: 600;
     cursor: pointer;
     transition: all var(--bds-transition);
+    min-width: 0;
+    flex-shrink: 1;
+    overflow: hidden;
+  }
+
+  .bds-css-toggle-btn span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .bds-css-toggle-btn:hover, .bds-css-toggle-btn.active {
@@ -2212,11 +2421,38 @@
     cursor: pointer;
   }
 
+  .bds-lang-btn-group {
+    display: flex;
+    gap: 8px;
+    width: 100%;
+    flex-wrap: wrap;
+    box-sizing: border-box;
+  }
+
+  .bds-lang-btn {
+    flex: 1 1 120px;
+    min-width: 0;
+    font-size: 11px;
+    padding: 6px 8px;
+    text-align: center;
+    white-space: normal;
+    word-break: break-word;
+    box-sizing: border-box;
+  }
+
+  .bds-lang-reset-btn {
+    border-color: rgba(239, 68, 68, 0.3);
+    color: rgba(239, 68, 68, 0.8);
+  }
+
   .bds-token-field {
     width: 100%;
     display: flex;
     align-items: center;
     gap: 8px;
+    flex-wrap: wrap;
+    box-sizing: border-box;
+    min-width: 0;
   }
 
   .bds-token-actions {
@@ -2224,11 +2460,13 @@
     align-items: center;
     gap: 6px;
     flex-shrink: 0;
+    flex-wrap: wrap;
+    min-width: 0;
   }
 
   .bds-token-btn {
-    min-width: 58px;
-    padding-inline: 10px;
+    min-width: 0;
+    padding-inline: 8px;
   }
 
   .bds-token-btn:disabled {
@@ -2264,17 +2502,28 @@
     font-size: 13px;
     font-weight: 600;
     color: var(--bds-text-primary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    display: block;
+    width: 100%;
   }
 
   .bds-prompt-status {
     font-size: 11px;
     color: var(--bds-text-tertiary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    display: block;
+    width: 100%;
   }
 
   .bds-prompt-actions {
     display: flex;
     gap: 6px;
     align-items: center;
+    flex-shrink: 0;
   }
 
   .bds-add-prompt-btn {
@@ -2352,6 +2601,7 @@
     flex-direction: column;
     gap: 20px;
     overflow-y: auto;
+    overflow-x: hidden;
   }
 
   .bds-field {
@@ -2472,7 +2722,7 @@
     align-items: center;
     gap: 10px;
     flex: 1;
-    max-width: 200px;
+    max-width: 140px;
   }
 
   .bds-slider {
@@ -2516,5 +2766,67 @@
     text-align: right;
     color: var(--bds-text-primary);
     font-variant-numeric: tabular-nums;
+  }
+
+  .bds-search-provider-list {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    width: 100%;
+    box-sizing: border-box;
+  }
+
+  .bds-search-provider-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 4px 6px;
+    border-radius: 6px;
+    background: var(--bds-bg-hover, rgba(128, 128, 128, 0.08));
+  }
+
+  .bds-search-provider-label {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 12px;
+    color: var(--bds-text-primary);
+    cursor: pointer;
+    min-width: 0;
+  }
+
+  .bds-search-provider-label input {
+    margin: 0;
+    accent-color: var(--bds-accent);
+  }
+
+  .bds-search-provider-controls {
+    display: flex;
+    gap: 4px;
+  }
+
+  .bds-search-provider-move {
+    width: 22px;
+    height: 22px;
+    padding: 0;
+    border: 1px solid var(--bds-border, rgba(128, 128, 128, 0.25));
+    border-radius: 5px;
+    background: transparent;
+    color: var(--bds-text-primary);
+    font-size: 11px;
+    line-height: 1;
+    cursor: pointer;
+  }
+
+  .bds-search-provider-move:hover:not(:disabled) {
+    background: var(--bds-accent);
+    color: #fff;
+    border-color: var(--bds-accent);
+  }
+
+  .bds-search-provider-move:disabled {
+    opacity: 0.35;
+    cursor: default;
   }
 </style>
