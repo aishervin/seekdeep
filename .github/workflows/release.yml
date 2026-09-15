@@ -54,7 +54,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 24
           cache: npm
 
       - name: Setup Java
@@ -102,7 +102,8 @@ jobs:
           fi
           chmod +x ./gradlew
 
-      - name: Validate signing configuration
+      - name: Prepare Android signing
+        id: signing
         env:
           BDS_KEYSTORE: ${{ secrets.BDS_KEYSTORE }}
           BDS_KEYSTORE_PASSWORD: ${{ secrets.BDS_KEYSTORE_PASSWORD }}
@@ -110,14 +111,17 @@ jobs:
           BDS_KEY_PASSWORD: ${{ secrets.BDS_KEY_PASSWORD }}
         run: |
           set -euo pipefail
-          [[ -n "$BDS_KEYSTORE" ]] || { echo "BDS_KEYSTORE secret is missing"; exit 1; }
-          [[ -n "$BDS_KEYSTORE_PASSWORD" ]] || { echo "BDS_KEYSTORE_PASSWORD secret is missing"; exit 1; }
-          [[ -n "$BDS_KEY_ALIAS" ]] || { echo "BDS_KEY_ALIAS secret is missing"; exit 1; }
-          [[ -n "$BDS_KEY_PASSWORD" ]] || { echo "BDS_KEY_PASSWORD secret is missing"; exit 1; }
-          printf '%s' "$BDS_KEYSTORE" | base64 --decode > android/ci-release.jks
-          test -s android/ci-release.jks
+          if [[ -n "$BDS_KEYSTORE" && -n "$BDS_KEYSTORE_PASSWORD" && -n "$BDS_KEY_ALIAS" && -n "$BDS_KEY_PASSWORD" ]]; then
+            printf '%s' "$BDS_KEYSTORE" | base64 --decode > android/ci-release.jks
+            test -s android/ci-release.jks
+            echo "available=true" >> "$GITHUB_OUTPUT"
+            echo "Persistent release signing secrets are available."
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "WARNING: BDS_* signing secrets are not configured. Building unsigned release APKs for CI validation."
+          fi
 
-      - name: Build signed ARM release APKs
+      - name: Build ARM release APKs
         working-directory: android
         run: ./gradlew --no-daemon clean assembleRelease -PversionName="${{ steps.version.outputs.version }}" -PversionCode="${{ steps.version.outputs.version_code }}"
         env:
@@ -141,15 +145,19 @@ jobs:
           cp "$ARM64" "Seekdeep-arm64-v8a-v$VERSION.apk"
           cp "$ARMV7" "Seekdeep-armeabi-v7a-v$VERSION.apk"
 
-          for apk in Seekdeep-universal-v$VERSION.apk Seekdeep-arm64-v8a-v$VERSION.apk Seekdeep-armeabi-v7a-v$VERSION.apk; do
-            "$ANDROID_HOME/build-tools/34.0.0/apksigner" verify --verbose "$apk"
-          done
+          if [[ "${{ steps.signing.outputs.available }}" == "true" ]]; then
+            for apk in Seekdeep-universal-v$VERSION.apk Seekdeep-arm64-v8a-v$VERSION.apk Seekdeep-armeabi-v7a-v$VERSION.apk; do
+              "$ANDROID_HOME/build-tools/34.0.0/apksigner" verify --verbose "$apk"
+            done
 
-          CERT1=$("$ANDROID_HOME/build-tools/34.0.0/apksigner" verify --print-certs "Seekdeep-universal-v$VERSION.apk" | grep 'Signer #1 certificate SHA-256 digest' | head -n1)
-          CERT2=$("$ANDROID_HOME/build-tools/34.0.0/apksigner" verify --print-certs "Seekdeep-arm64-v8a-v$VERSION.apk" | grep 'Signer #1 certificate SHA-256 digest' | head -n1)
-          CERT3=$("$ANDROID_HOME/build-tools/34.0.0/apksigner" verify --print-certs "Seekdeep-armeabi-v7a-v$VERSION.apk" | grep 'Signer #1 certificate SHA-256 digest' | head -n1)
-          [[ "$CERT1" == "$CERT2" && "$CERT1" == "$CERT3" ]] || { echo "APK certificates differ"; exit 1; }
-          echo "All APKs are signed by the same release certificate."
+            CERT1=$("$ANDROID_HOME/build-tools/34.0.0/apksigner" verify --print-certs "Seekdeep-universal-v$VERSION.apk" | grep 'Signer #1 certificate SHA-256 digest' | head -n1)
+            CERT2=$("$ANDROID_HOME/build-tools/34.0.0/apksigner" verify --print-certs "Seekdeep-arm64-v8a-v$VERSION.apk" | grep 'Signer #1 certificate SHA-256 digest' | head -n1)
+            CERT3=$("$ANDROID_HOME/build-tools/34.0.0/apksigner" verify --print-certs "Seekdeep-armeabi-v7a-v$VERSION.apk" | grep 'Signer #1 certificate SHA-256 digest' | head -n1)
+            [[ "$CERT1" == "$CERT2" && "$CERT1" == "$CERT3" ]] || { echo "APK certificates differ"; exit 1; }
+            echo "All APKs are signed by the same release certificate."
+          else
+            echo "Unsigned APKs produced because persistent signing secrets are not configured."
+          fi
 
           echo "universal=Seekdeep-universal-v$VERSION.apk" >> "$GITHUB_OUTPUT"
           echo "arm64=Seekdeep-arm64-v8a-v$VERSION.apk" >> "$GITHUB_OUTPUT"
